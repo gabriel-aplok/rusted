@@ -18,7 +18,7 @@ Artifacts live in the shared store, so ten projects that use the same crates com
 
 ## Requirements
 
-Linux, or Windows 10 and 11 x64 with rustc 1.85 or newer, `curl`, and `tar`. The `sh` scripts need WSL or Git Bash until the PowerShell scripts are in place. Tests use `python3`. Cargo is optional and only used by `scripts/lock-compare.sh`.
+Linux, or Windows 10 and 11 x64 with rustc 1.85 or newer, `curl`, and `tar`. The `sh` scripts need WSL or Git Bash until the PowerShell scripts are in place. macOS (Apple Silicon) runs the same rustc-only build and is covered by CI. Tests use `python3`. Cargo is optional and only used by `scripts/lock-compare.sh`.
 
 ## Quick start
 

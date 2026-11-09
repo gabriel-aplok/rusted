@@ -8,7 +8,9 @@ use super::Mode;
 
 #[cfg(windows)]
 const PROC_MACRO_DYLIB_EXTENSION: &str = "dll";
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+const PROC_MACRO_DYLIB_EXTENSION: &str = "dylib";
+#[cfg(not(any(windows, target_os = "macos")))]
 const PROC_MACRO_DYLIB_EXTENSION: &str = "so";
 
 #[derive(Clone)]

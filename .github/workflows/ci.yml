@@ -40,3 +40,23 @@ jobs:
         run: |
           .\target\bootstrap\rusted.exe new hello
           .\target\bootstrap\rusted.exe run --manifest-path hello/Cargo.toml
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build bootstrap
+        run: |
+          rustup default stable
+          mkdir -p target/bootstrap
+          rustc --edition 2021 --crate-name rusted -C opt-level=0 -C debuginfo=0 -C strip=debuginfo -C codegen-units=16 src/main.rs -o target/bootstrap/rusted
+      - name: Test
+        run: |
+          mkdir -p target/tests
+          rustc --edition 2021 --test src/main.rs -o target/tests/rusted-unit
+          ./target/tests/rusted-unit
+      - name: Smoke test
+        run: |
+          ./target/bootstrap/rusted new hello
+          ./target/bootstrap/rusted run --manifest-path hello/Cargo.toml

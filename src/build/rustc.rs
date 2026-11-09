@@ -321,7 +321,7 @@ pub(crate) fn compile(
         }
         UnitKind::ProcMacro => {
             command.arg("--crate-type").arg("proc-macro");
-            let proc_macro = proc_macro_rlib()?;
+            let proc_macro = proc_macro_metadata()?;
             command
                 .arg("--extern")
                 .arg(format!("proc_macro={}", proc_macro.display()));
@@ -563,7 +563,7 @@ fn log_invocation(command: &Command) -> Result<(), String> {
         .map_err(|error| format!("{}: {error}", std::path::Path::new(&path).display()))
 }
 
-fn proc_macro_rlib() -> Result<PathBuf, String> {
+fn proc_macro_metadata() -> Result<PathBuf, String> {
     let output = Command::new(program())
         .arg("--print")
         .arg("target-libdir")
@@ -578,22 +578,35 @@ fn proc_macro_rlib() -> Result<PathBuf, String> {
     let directory = String::from_utf8(output.stdout)
         .map_err(|error| format!("rustc target-libdir is not UTF-8: {error}"))?;
     let directory = PathBuf::from(directory.trim());
-    let mut candidates = Vec::new();
+    let mut metadata = Vec::new();
+    let mut rlibs = Vec::new();
     let entries = std::fs::read_dir(&directory)
         .map_err(|error| format!("{}: {error}", directory.display()))?;
     for entry in entries {
         let entry = entry.map_err(|error| format!("{}: {error}", directory.display()))?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with("libproc_macro-") && name.ends_with(".rlib") {
-            candidates.push(entry.path());
+        if !name.starts_with("libproc_macro-") {
+            continue;
+        }
+        if name.ends_with(".rmeta") {
+            metadata.push(entry.path());
+        } else if name.ends_with(".rlib") {
+            rlibs.push(entry.path());
         }
     }
-    candidates.sort();
-    candidates
+    metadata.sort();
+    rlibs.sort();
+    metadata
         .into_iter()
         .next()
-        .ok_or_else(|| format!("no libproc_macro rlib found in {}", directory.display()))
+        .or_else(|| rlibs.into_iter().next())
+        .ok_or_else(|| {
+            format!(
+                "no libproc_macro rlib or rmeta found in {}",
+                directory.display()
+            )
+        })
 }
 
 fn render(command: &Command) -> String {

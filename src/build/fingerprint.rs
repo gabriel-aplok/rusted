@@ -598,6 +598,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn source_hash_tracks_names_and_symlinks() {
         let fixture = Fixture::new("names");
@@ -614,5 +615,19 @@ mod tests {
         std::os::unix::fs::symlink("other.rs", fixture.dir.join("src/link.rs")).unwrap();
         let linked = source_hash(&fixture.dir, &[], &mut SourceHashCache::new()).unwrap();
         assert_ne!(renamed, linked);
+    }
+
+    #[test]
+    fn source_hash_tracks_renamed_files() {
+        let fixture = Fixture::new("renames");
+        let before = source_hash(&fixture.dir, &[], &mut SourceHashCache::new()).unwrap();
+
+        std::fs::rename(
+            fixture.dir.join("src/lib.rs"),
+            fixture.dir.join("src/other.rs"),
+        )
+        .unwrap();
+        let renamed = source_hash(&fixture.dir, &[], &mut SourceHashCache::new()).unwrap();
+        assert_ne!(before, renamed);
     }
 }

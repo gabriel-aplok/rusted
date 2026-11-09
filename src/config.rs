@@ -7,6 +7,9 @@ use crate::toml::{self, Table, Value};
 const CONFIG_DIR_ENV: &str = "XDG_CONFIG_HOME";
 const CACHE_DIR_ENV: &str = "XDG_CACHE_HOME";
 const HOME_ENV: &str = "HOME";
+const USERPROFILE_ENV: &str = "USERPROFILE";
+const APPDATA_ENV: &str = "APPDATA";
+const LOCALAPPDATA_ENV: &str = "LOCALAPPDATA";
 const MANIFEST_ENV: &str = "RUSTED_MANIFEST";
 const JOBS_ENV: &str = "RUSTED_JOBS";
 const OFFLINE_ENV: &str = "RUSTED_OFFLINE";
@@ -201,22 +204,32 @@ pub(crate) fn cache_root(config: &Config) -> Result<PathBuf, String> {
 pub(crate) fn cache_home() -> Result<PathBuf, String> {
     let base = match std::env::var_os(CACHE_DIR_ENV) {
         Some(dir) => PathBuf::from(dir),
+        None if cfg!(windows) => match std::env::var_os(LOCALAPPDATA_ENV) {
+            Some(dir) => PathBuf::from(dir),
+            None => home()?.join(".cache"),
+        },
         None => home()?.join(".cache"),
     };
     Ok(base.join(CACHE_DIR_NAME))
 }
 
 fn config_dir() -> Result<PathBuf, String> {
-    match std::env::var_os(CONFIG_DIR_ENV) {
-        Some(dir) => Ok(PathBuf::from(dir)),
-        None => Ok(home()?.join(".config")),
-    }
+    let base = match std::env::var_os(CONFIG_DIR_ENV) {
+        Some(dir) => PathBuf::from(dir),
+        None if cfg!(windows) => match std::env::var_os(APPDATA_ENV) {
+            Some(dir) => PathBuf::from(dir),
+            None => home()?.join(".config"),
+        },
+        None => home()?.join(".config"),
+    };
+    Ok(base)
 }
 
 fn home() -> Result<PathBuf, String> {
     std::env::var_os(HOME_ENV)
+        .or_else(|| std::env::var_os(USERPROFILE_ENV))
         .map(PathBuf::from)
-        .ok_or_else(|| format!("`{HOME_ENV}` is not set"))
+        .ok_or_else(|| format!("neither `{HOME_ENV}` nor `{USERPROFILE_ENV}` is set"))
 }
 
 fn env_value(name: &str) -> Result<Option<String>, String> {

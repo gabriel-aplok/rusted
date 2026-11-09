@@ -6,6 +6,11 @@ use crate::resolver::resolve::{BuildContext, PackageId, ResolvedDependency};
 
 use super::Mode;
 
+#[cfg(windows)]
+const PROC_MACRO_DYLIB_EXTENSION: &str = "dll";
+#[cfg(not(windows))]
+const PROC_MACRO_DYLIB_EXTENSION: &str = "so";
+
 #[derive(Clone)]
 pub(crate) struct PackageInfo {
     pub(crate) id: PackageId,
@@ -77,7 +82,7 @@ pub(crate) fn plan(
         if let Some(lib) = lib_target(&package.manifest, &package.dir) {
             let crate_name = normalize_name(&lib.name);
             let output_name = if lib.proc_macro {
-                format!("lib{crate_name}.so")
+                format!("lib{crate_name}.{PROC_MACRO_DYLIB_EXTENSION}")
             } else {
                 match mode {
                     Mode::Check => format!("lib{crate_name}.rmeta"),

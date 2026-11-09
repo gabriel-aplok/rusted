@@ -20,3 +20,23 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
       - name: Test
         run: ./scripts/test.sh all
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build bootstrap
+        run: |
+          rustup default stable-msvc
+          mkdir target/bootstrap
+          rustc --edition 2021 --crate-name rusted -C opt-level=0 -C debuginfo=0 -C strip=debuginfo -C codegen-units=16 src/main.rs -o target/bootstrap/rusted.exe
+      - name: Test
+        run: |
+          mkdir target/tests
+          rustc --edition 2021 --test src/main.rs -o target/tests/rusted-unit.exe
+          .\target\tests\rusted-unit.exe
+      - name: Smoke test
+        run: |
+          .\target\bootstrap\rusted.exe new hello
+          .\target\bootstrap\rusted.exe run --manifest-path hello/Cargo.toml

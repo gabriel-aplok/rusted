@@ -122,8 +122,10 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::MetadataExt;
     use std::path::PathBuf;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
 
     use super::Store;
 
@@ -185,6 +187,7 @@ mod tests {
         assert!(store.lookup("abc", &outputs()).is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn link_into_uses_hardlinks_on_the_same_filesystem() {
         let fixture = Fixture::new("link");

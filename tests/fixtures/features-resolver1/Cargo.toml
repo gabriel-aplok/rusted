@@ -1,0 +1,10 @@
+[package]
+name = "resolver1-app"
+version = "0.1.0"
+edition = "2018"
+
+[workspace]
+members = []
+
+[target.'cfg(windows)'.dependencies]
+windows-only = { path = "../features/windows-only" }

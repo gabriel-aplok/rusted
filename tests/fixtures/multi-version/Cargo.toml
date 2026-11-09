@@ -1,0 +1,11 @@
+[package]
+name = "multi-version-app"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+members = []
+
+[dependencies]
+bitflags1 = { package = "bitflags", version = "1" }
+bitflags2 = { package = "bitflags", version = "2" }

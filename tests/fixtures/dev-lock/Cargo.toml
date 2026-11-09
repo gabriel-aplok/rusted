@@ -1,0 +1,10 @@
+[package]
+name = "dev-lock-app"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+members = []
+
+[dev-dependencies]
+helper = { path = "helper" }

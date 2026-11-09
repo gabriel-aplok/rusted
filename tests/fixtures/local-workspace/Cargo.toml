@@ -1,0 +1,15 @@
+[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+members = []
+
+[dependencies]
+core = { path = "core" }
+left = { path = "left" }
+right = { path = "right" }
+
+[profile.fast]
+opt-level = 2

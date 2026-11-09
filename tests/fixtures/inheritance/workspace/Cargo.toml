@@ -1,0 +1,11 @@
+[workspace]
+members = ["app", "../shared"]
+default-members = ["app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Rusted"]
+
+[workspace.dependencies]
+shared = { path = "../shared" }

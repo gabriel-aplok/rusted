@@ -1,0 +1,26 @@
+[package]
+name = "feature-app"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+members = []
+
+[features]
+default = ["basic"]
+basic = ["dep:alpha"]
+weak = ["beta?/loud"]
+full = ["basic", "weak", "dep:beta", "beta/loud"]
+unix = ["dep:unix-only"]
+cycle-a = ["cycle-b"]
+cycle-b = ["cycle-a"]
+
+[dependencies]
+alpha = { path = "alpha", optional = true }
+beta = { path = "beta", optional = true, default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+unix-only = { path = "unix-only", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-only = { path = "windows-only" }

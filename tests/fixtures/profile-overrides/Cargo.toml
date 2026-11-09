@@ -1,0 +1,17 @@
+[package]
+name = "profile-app"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+members = []
+
+[dependencies]
+dep = { path = "dep" }
+
+[profile.dev]
+opt-level = 1
+linker = "system"
+
+[profile.dev.package.dep]
+opt-level = 3

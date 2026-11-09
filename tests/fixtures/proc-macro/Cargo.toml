@@ -1,0 +1,10 @@
+[package]
+name = "proc-macro-app"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+members = []
+
+[dependencies]
+hello-macro = { path = "hello-macro" }

@@ -1,0 +1,16 @@
+files/
+target/
+*.rmeta
+*.rlib
+*.profraw
+*.profdata
+tests/fixtures/**/Cargo.lock
+
+.env
+.env.*
+!.env.example
+
+.DS_Store
+.idea/
+.vscode/
+*.swp

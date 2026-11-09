@@ -1,0 +1,14 @@
+[package]
+name = "build-script-app"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+members = []
+
+[features]
+special = ["builddep/special"]
+
+[dependencies]
+builddep = { path = "builddep" }
+linkuser = { path = "linkuser" }

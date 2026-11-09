@@ -1,4 +1,4 @@
-# rusted
+# Rusted
 
 A Cargo-compatible Rust build tool that bootstraps with rustc alone. It keeps one content-addressed cache for compiled artifacts and can build itself.
 
@@ -8,7 +8,7 @@ Pre-1.0. It reads `Cargo.toml` and `rusted.toml`, resolves crates.io dependencie
 
 Measured on a 2-core Intel Celeron 6305 at 1.8 GHz. The project is `tests/fixtures/local-workspace`, five library crates plus one application.
 
-| Measurement | rusted | cargo |
+| Measurement | Rusted | cargo |
 | --- | --- | --- |
 | Cold build | 0.47 s | 0.60 s |
 | Warm build | 0.04 s, 0 rustc calls | 0.04 s |
@@ -16,7 +16,7 @@ Measured on a 2-core Intel Celeron 6305 at 1.8 GHz. The project is `tests/fixtur
 
 Measured on an AMD Ryzen 5 4600H laptop running Windows 10 x64 with rustc 1.99.1 MSVC, same project and method. The cargo build used an identical manifest copy without the `[profile.fast]` block, which cargo rejects.
 
-| Measurement | rusted | cargo |
+| Measurement | Rusted | cargo |
 | --- | --- | --- |
 | Cold build | 0.53 s | 0.56 s |
 | Warm build | 0.09 s, 0 rustc calls | 0.06 s |
@@ -26,7 +26,7 @@ Artifacts live in the shared store, so ten projects that use the same crates com
 
 ## Requirements
 
-Linux, or Windows 10 and 11 x64 with rustc 1.85 or newer, `curl`, and `tar`. Using rusted on Windows needs no shell, `curl.exe` and `tar.exe` ship with Windows. The `sh` scripts are developer helpers and need WSL or Git Bash, use `scripts/bootstrap.ps1` and `scripts/test.ps1` instead. macOS (Apple Silicon) runs the same rustc-only build and is covered by CI. Tests use `python3`. Cargo is optional and only used by `scripts/lock-compare.sh`.
+Linux, or Windows 10 and 11 x64 with rustc 1.85 or newer, `curl`, and `tar`. Using Rusted on Windows needs no shell, `curl.exe` and `tar.exe` ship with Windows. The `sh` scripts are developer helpers and need WSL or Git Bash, use `scripts/bootstrap.ps1` and `scripts/test.ps1` instead. macOS (Apple Silicon) runs the same rustc-only build and is covered by CI. Tests use `python3`. Cargo is optional and only used by `scripts/lock-compare.sh`.
 
 ## Quick start
 
@@ -85,12 +85,12 @@ Development defaults to the stage 0 binary that rustc builds:
 
     scripts/dev.sh build --release
 
-To make rusted compile rusted itself and use that binary for everything:
+To make Rusted compile Rusted itself and use that binary for everything:
 
     RUSTED_DEV_STAGE=rusted scripts/dev.sh build --release
     RUSTED_DEV_STAGE=rusted scripts/dev.sh test
 
-In that mode every compilation of the tool is driven by rusted. The dogfood binary lives in `target/dogfood`, so the fast stage 0 loop keeps working. `RUSTED_DEV_TARGET` moves it. `scripts/selfhost.sh` is the stricter version of the same idea: it builds three stages, and `scripts/test.sh all` runs that loop with a fresh cache, offline mode, and zero-rustc assertions.
+In that mode every compilation of the tool is driven by Rusted. The dogfood binary lives in `target/dogfood`, so the fast stage 0 loop keeps working. `RUSTED_DEV_TARGET` moves it. `scripts/selfhost.sh` is the stricter version of the same idea: it builds three stages, and `scripts/test.sh all` runs that loop with a fresh cache, offline mode, and zero-rustc assertions.
 
 ## Tests
 
@@ -98,7 +98,7 @@ In that mode every compilation of the tool is driven by rusted. The dogfood bina
     ./scripts/test.sh integration
     ./scripts/test.sh all
 
-Network tests are gated by `RUSTED_NETWORK_TESTS=1`. `scripts/lock-compare.sh` compares rusted lockfiles with cargo output for six fixtures when cargo is installed.
+Network tests are gated by `RUSTED_NETWORK_TESTS=1`. `scripts/lock-compare.sh` compares Rusted lockfiles with cargo output for six fixtures when cargo is installed.
 
 ## Contributing
 

@@ -14,6 +14,14 @@ Measured on a 2-core Intel Celeron 6305 at 1.8 GHz. The project is `tests/fixtur
 | Warm build | 0.04 s, 0 rustc calls | 0.04 s |
 | Disk after cold build | 508 KiB per project | 12 MiB per project |
 
+Measured on an AMD Ryzen 5 4600H laptop running Windows 10 x64 with rustc 1.99.1 MSVC, same project and method. The cargo build used an identical manifest copy without the `[profile.fast]` block, which cargo rejects.
+
+| Measurement | rusted | cargo |
+| --- | --- | --- |
+| Cold build | 0.53 s | 0.56 s |
+| Warm build | 0.09 s, 0 rustc calls | 0.06 s |
+| Disk after cold build | 0.14 MB per project | 3.86 MB per project |
+
 Artifacts live in the shared store, so ten projects that use the same crates compile those crates once. Warm builds skip rustc entirely through content-addressed hits. Source hashing is cached per machine by size and mtime, and dev builds use incremental compilation by default.
 
 ## Requirements

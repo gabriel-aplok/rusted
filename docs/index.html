@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rusted</title>
+<meta name="description" content="A Cargo-compatible Rust build tool that bootstraps with rustc alone. One content-addressed cache for compiled artifacts.">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/gabriel-aplok/lotus-css@main/dist/lotus.min.css">
+<style>
+  :root {
+    --primary: oklch(0.55 0.14 45);
+    --grid-max-width: 68rem;
+  }
+  pre { overflow-x: auto; }
+  h2 { margin-block-start: 3rem; }
+</style>
+</head>
+<body>
+
+<nav class="nav is-sticky">
+  <div class="container">
+    <div class="nav-left"><a class="brand" href="#">Rusted</a></div>
+    <div class="nav-right">
+      <a href="#performance">Performance</a>
+      <a href="#quick-start">Quick start</a>
+      <a href="#commands">Commands</a>
+      <a href="#cache">Cache</a>
+      <a href="https://github.com/gabriel-aplok/rusted">GitHub ↗</a>
+    </div>
+  </div>
+</nav>
+
+<div class="container">
+
+  <header class="stack" style="--stack-gap: 1rem; margin-block: 4rem 3rem;">
+    <div class="flex flex-wrap" style="gap: 0.5rem;">
+      <span class="badge primary">Linux</span>
+      <span class="badge primary">Windows 10 and 11 x64</span>
+      <span class="badge primary">macOS Apple Silicon</span>
+      <span class="badge outline">Pre-1.0</span>
+      <span class="badge outline">MIT</span>
+    </div>
+    <h1>Rusted</h1>
+    <p style="font-size: 1.2rem;">
+      A Cargo-compatible Rust build tool that bootstraps with rustc alone.
+      One content-addressed cache for compiled artifacts, shared across every
+      project on the machine. It can build itself, three stages deep.
+    </p>
+    <p class="muted-text">
+      Reads <code>Cargo.toml</code> and <code>rusted.toml</code>, resolves
+      crates.io dependencies, writes <code>Cargo.lock</code>, and builds
+      workspaces with path and registry dependencies. No Rust dependencies in
+      the tool itself. Cargo never runs during a build.
+    </p>
+    <div class="flex" style="gap: 0.75rem;">
+      <a class="button primary" href="https://github.com/gabriel-aplok/rusted">Source on GitHub</a>
+      <a class="button outline" href="#quick-start">Quick start</a>
+    </div>
+  </header>
+
+  <h2 id="performance">Performance</h2>
+  <p>
+    The project is <code>tests/fixtures/local-workspace</code>, five library
+    crates plus one application. Cold build, warm build, and disk used after a
+    cold build. The cargo columns build the same code; the Windows cargo run
+    used an identical manifest copy without the <code>[profile.fast]</code>
+    block, which cargo rejects.
+  </p>
+
+  <div class="card" style="margin-block: 1.5rem;">
+    <div class="card-header">
+      <h3>Intel Celeron 6305, 2 cores at 1.8 GHz, Linux</h3>
+    </div>
+    <table>
+      <thead>
+        <tr><th>Measurement</th><th>Rusted</th><th>cargo</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Cold build</td><td>0.47 s</td><td>0.60 s</td></tr>
+        <tr><td>Warm build</td><td>0.04 s, 0 rustc calls</td><td>0.04 s</td></tr>
+        <tr><td>Disk after cold build</td><td>508 KiB per project</td><td>12 MiB per project</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card" style="margin-block: 1.5rem;">
+    <div class="card-header">
+      <h3>AMD Ryzen 5 4600H, Windows 10 x64, rustc 1.99.1 MSVC</h3>
+    </div>
+    <table>
+      <thead>
+        <tr><th>Measurement</th><th>Rusted</th><th>cargo</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Cold build</td><td>0.53 s</td><td>0.56 s</td></tr>
+        <tr><td>Warm build</td><td>0.09 s, 0 rustc calls</td><td>0.06 s</td></tr>
+        <tr><td>Disk after cold build</td><td>0.14 MB per project</td><td>3.86 MB per project</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>
+    Artifacts live in the shared store, so ten projects using the same crates
+    compile those crates once. Warm builds skip rustc entirely through
+    content-addressed hits. Source hashing is cached per machine by size and
+    mtime, and dev builds use incremental compilation by default.
+  </p>
+
+  <h2 id="why">Why a second build tool</h2>
+  <div class="row">
+    <div class="card col-6">
+      <div class="card-header">
+        <h3>Bootstraps with rustc alone</h3>
+      </div>
+      <div class="card-description">
+        One <code>rustc</code> invocation compiles the whole tool from
+        <code>src/main.rs</code>. No install step, no Cargo, no dependencies.
+        The CI jobs do exactly that on three platforms.
+      </div>
+    </div>
+    <div class="card col-6">
+      <div class="card-header">
+        <h3>One cache for the machine</h3>
+      </div>
+      <div class="card-description">
+        Compiled artifacts are content-addressed and shared. Two projects that
+        depend on the same crate version compile it once. Warm builds make
+        zero rustc calls.
+      </div>
+    </div>
+    <div class="card col-6">
+      <div class="card-header">
+        <h3>Cargo-compatible</h3>
+      </div>
+      <div class="card-description">
+        Wraps <code>cargo</code>-style manifests, workspaces, resolver 2
+        features, build scripts, proc macros, profiles, editions through 2024,
+        and pipelined library builds where a dependency publishes its rmeta
+        before its rlib finishes.
+      </div>
+    </div>
+    <div class="card col-6">
+      <div class="card-header">
+        <h3>Remote cache included</h3>
+      </div>
+      <div class="card-description">
+        Point <code>RUSTED_REMOTE_CACHE</code> at any S3-compatible bucket.
+        Uploads happen after a successful local build, fetches are verified,
+        and failures fall back to a local build with a warning.
+      </div>
+    </div>
+  </div>
+
+  <h2 id="quick-start">Quick start</h2>
+  <p>
+    rustc 1.85 or newer, <code>curl</code>, and <code>tar</code>. On Windows,
+    <code>curl.exe</code> and <code>tar.exe</code> ship with the system. No
+    shell scripts needed for a Windows build, use
+    <code>scripts/bootstrap.ps1</code>.
+  </p>
+  <pre><code>./scripts/bootstrap.sh
+./target/bootstrap/rusted new hello
+./target/bootstrap/rusted run --manifest-path hello/Cargo.toml
+install -m 755 target/bootstrap/rusted ~/.local/bin/rusted</code></pre>
+  <p class="muted-text">Windows:</p>
+  <pre><code>.\scripts\bootstrap.ps1
+.\target\bootstrap\rusted.exe new hello
+.\target\bootstrap\rusted.exe run --manifest-path hello/Cargo.toml</code></pre>
+
+  <h2 id="commands">Commands</h2>
+  <pre><code>rusted new &lt;PATH&gt;
+rusted init [PATH]
+rusted build
+rusted check
+rusted run
+rusted test
+rusted add &lt;NAME&gt;
+rusted remove &lt;NAME&gt;
+rusted update
+rusted tree
+rusted metadata
+rusted clean [--project|--store|--index|--source|--all]
+rusted cache info
+rusted cache gc --max-size &lt;SIZE&gt; [--dry-run] [--remote]</code></pre>
+  <p>
+    Build flags include <code>--release</code>, <code>--profile</code>,
+    <code>--workspace</code>, <code>-p</code>, <code>--features</code>,
+    <code>--all-features</code>, <code>--no-default-features</code>,
+    <code>--locked</code>, <code>--frozen</code>, <code>--offline</code>,
+    <code>-j</code>, <code>--stats</code>, and
+    <code>--message-format=json</code>. Run <code>rusted help</code> for the
+    full list.
+  </p>
+
+  <h2 id="cache">Cache</h2>
+  <p>
+    The store lives at <code>${XDG_CACHE_HOME:-~/.cache}/rusted/v1</code>, and
+    at <code>%LOCALAPPDATA%\rusted\v1</code> on Windows.
+    <code>--force</code> rebuilds even on a hit. <code>cache info</code>
+    reports sizes. <code>cache gc --max-size &lt;SIZE&gt;</code> removes
+    least recently used artifacts and skips artifacts held by a running build.
+  </p>
+
+  <h2 id="configuration">Configuration</h2>
+  <p>
+    Global config lives at
+    <code>${XDG_CONFIG_HOME:-~/.config}/rusted/config.toml</code>. Keys are
+    <code>manifest</code>, <code>cache_dir</code>, <code>target_dir</code>,
+    <code>jobs</code>, <code>offline</code>, <code>registry.index</code>,
+    <code>linker</code>, and <code>profile.*</code>. Environment overrides are
+    <code>RUSTED_MANIFEST</code>, <code>RUSTED_CACHE_DIR</code>,
+    <code>RUSTED_TARGET_DIR</code>, <code>RUSTED_JOBS</code>,
+    <code>RUSTED_OFFLINE</code>, and <code>RUSTED_RUSTC_LOG</code>.
+  </p>
+  <p>
+    The default linker mode prefers <code>mold</code>, then
+    <code>lld</code>, then the system linker. A profile or package override
+    wins.
+  </p>
+
+  <h2 id="remote-cache">Remote cache</h2>
+  <div class="alert">
+    <span class="alert-icon">info</span>
+    <div class="alert-body">
+      <div class="alert-title">Set it and forget it</div>
+      <div class="alert-description">
+        Set <code>RUSTED_REMOTE_CACHE=s3://bucket/prefix</code> to share
+        artifacts between machines. Credentials come from
+        <code>RUSTED_REMOTE_ACCESS_KEY</code> and
+        <code>RUSTED_REMOTE_SECRET_KEY</code>.
+        <code>RUSTED_REMOTE_ENDPOINT</code> selects a MinIO-style endpoint.
+      </div>
+    </div>
+  </div>
+  <p>
+    Uploads happen after a successful local build. Fetches are verified before
+    install. Remote failures fall back to a local build with a warning.
+    Offline mode never contacts the remote cache.
+    <code>cache gc --remote</code> applies the same size limit to remote
+    objects.
+  </p>
+
+  <h2 id="self-host">Self-host</h2>
+  <pre><code>./scripts/selfhost.sh
+./target/selfhost/stage2 --version</code></pre>
+  <p>
+    Stage 0 is built by rustc. Stage 1 is built by stage 0, and stage 2 is
+    built by stage 1. Both stages run the unit suite.
+    <code>scripts/test.sh all</code> runs this loop with a fresh cache and
+    offline mode, then checks that the second build makes zero rustc calls.
+  </p>
+
+  <h2 id="requirements">Requirements</h2>
+  <table>
+    <thead>
+      <tr><th>Platform</th><th>Details</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Linux</td><td>rustc 1.85 or newer, <code>curl</code>, <code>tar</code></td></tr>
+      <tr><td>Windows 10 and 11 x64</td><td>rustc 1.85+ MSVC, <code>curl.exe</code> and <code>tar.exe</code> ship with Windows, VS Build Tools for <code>link.exe</code></td></tr>
+      <tr><td>macOS Apple Silicon</td><td>rustc 1.85 or newer, covered by CI</td></tr>
+    </tbody>
+  </table>
+  <p class="muted-text">
+    The <code>sh</code> scripts are developer helpers and need WSL or Git Bash
+    on Windows, use <code>scripts/bootstrap.ps1</code> and
+    <code>scripts/test.ps1</code> instead. Tests use <code>python3</code>.
+    Cargo is optional and only used by <code>scripts/lock-compare.sh</code>.
+  </p>
+
+  <h2 id="tests">Tests</h2>
+  <pre><code>./scripts/test.sh unit
+./scripts/test.sh integration
+./scripts/test.sh all</code></pre>
+  <p>
+    Network tests are gated by <code>RUSTED_NETWORK_TESTS=1</code>.
+    <code>scripts/lock-compare.sh</code> compares Rusted lockfiles with cargo
+    output for six fixtures when cargo is installed.
+  </p>
+
+  <h2 id="known-gaps">Known gaps</h2>
+  <ul>
+    <li>The S3 client is verified against a local Garage S3 server and an in-process mock. A public bucket test is pending.</li>
+  </ul>
+
+  <footer style="margin-block: 4rem 2rem;">
+    <hr>
+    <p class="muted-text">
+      MIT licensed. Built with
+      <a href="https://github.com/gabriel-aplok/lotus-css">LOTUS.css</a>.
+      Report issues on
+      <a href="https://github.com/gabriel-aplok/rusted/issues">GitHub</a>.
+    </p>
+  </footer>
+
+</div>
+
+</body>
+</html>

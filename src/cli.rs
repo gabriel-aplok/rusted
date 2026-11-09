@@ -607,6 +607,7 @@ fn resolve_workspace(
     let cache_root = cache_root(config).map_err(Failure::tool)?;
     let cfg = Cfg::cached(&cache_root.join("v1").join("cfg-cache")).map_err(Failure::tool)?;
     let mut index = IndexClient::new(config).map_err(Failure::tool)?;
+    let git_context = resolve::GitContext::new(cache_root.join("v1").join("git"), config.offline);
     let options = RootOptions {
         inheritance: Some(workspace.inheritance()),
         resolver: workspace.resolver,
@@ -621,6 +622,7 @@ fn resolve_workspace(
         &cfg,
         lock,
         config.manifest,
+        Some(&git_context),
         &options,
     )
     .map_err(Failure::tool)?;

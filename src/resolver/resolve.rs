@@ -2,10 +2,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 use crate::config::ManifestChoice;
-use crate::manifest::select::discover;
-use crate::manifest::{DependencyKind, Manifest};
+use crate::manifest::select::{discover, CARGO_MANIFEST_FILE};
+use crate::manifest::{DependencyKind, GitSource, Manifest};
 use crate::registry::index::IndexEntry;
 use crate::resolver::cfg::Cfg;
+use crate::resolver::git::{self, GitRefSelection};
 use crate::resolver::lockfile::Lockfile;
 use crate::resolver::semver::{Version, VersionReq};
 use crate::workspace::{apply_inheritance, Inheritance};
@@ -16,6 +17,11 @@ const MAX_STEPS: usize = 100_000;
 pub(crate) enum PackageSource {
     Registry,
     Path(PathBuf),
+    Git {
+        url: String,
+        reference: Option<GitRefSelection>,
+        rev: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -119,6 +125,45 @@ struct DepMeta {
 enum DepSource {
     Registry,
     Path(PathBuf),
+    Git(GitSource),
+}
+
+pub(crate) struct GitContext {
+    pub(crate) root: PathBuf,
+    pub(crate) offline: bool,
+    cache: std::sync::Mutex<BTreeMap<(String, Option<GitRefSelection>), String>>,
+}
+
+impl GitContext {
+    pub(crate) fn new(root: PathBuf, offline: bool) -> Self {
+        Self {
+            root,
+            offline,
+            cache: std::sync::Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    fn resolve_ref(
+        &self,
+        url: &str,
+        reference: Option<&GitRefSelection>,
+    ) -> Result<String, String> {
+        let cached = self
+            .cache
+            .lock()
+            .unwrap()
+            .get(&(url.to_string(), reference.cloned()))
+            .cloned();
+        if let Some(rev) = cached {
+            return Ok(rev);
+        }
+        let rev = git::resolve_ref(url, reference)?;
+        self.cache
+            .lock()
+            .unwrap()
+            .insert((url.to_string(), reference.cloned()), rev.clone());
+        Ok(rev)
+    }
 }
 
 #[derive(Clone)]
@@ -256,10 +301,26 @@ fn collect_manifest_deps(
                 "dependency `{key}` of `{package_name}` still has `workspace = true` after inheritance"
             ));
         }
-        if dependency.git.is_some() {
-            return Err(format!(
-                "dependency `{key}` of `{package_name}` is a git dependency, which is not supported"
-            ));
+
+        let requirement = dependency
+            .requirement
+            .clone()
+            .unwrap_or_else(|| "*".to_string());
+        let package = dependency.package.clone().unwrap_or_else(|| key.clone());
+        if let Some(git) = &dependency.git {
+            out.push(DepMeta {
+                key: key.clone(),
+                package,
+                requirement,
+                source: DepSource::Git(git.clone()),
+                target: target.clone(),
+                kind,
+                optional: dependency.optional,
+                default_features: dependency.default_features.unwrap_or(true),
+                features: dependency.features.clone(),
+                dev: kind == DependencyKind::Dev,
+            });
+            continue;
         }
         if let Some(registry) = &dependency.registry {
             if registry != "crates-io" {
@@ -280,11 +341,6 @@ fn collect_manifest_deps(
                 DepSource::Registry
             }
         };
-        let requirement = dependency
-            .requirement
-            .clone()
-            .unwrap_or_else(|| "*".to_string());
-        let package = dependency.package.clone().unwrap_or_else(|| key.clone());
 
         out.push(DepMeta {
             key: key.clone(),
@@ -360,6 +416,7 @@ struct Context<'a> {
     cfg: &'a Cfg,
     lock: Option<&'a Lockfile>,
     manifest_choice: ManifestChoice,
+    git: Option<&'a GitContext>,
     inheritance: Option<&'a Inheritance>,
     resolver: u32,
     dev_features: bool,
@@ -385,6 +442,7 @@ pub(crate) fn resolve(
     cfg: &Cfg,
     lock: Option<&Lockfile>,
     manifest_choice: ManifestChoice,
+    git: Option<&GitContext>,
     options: &RootOptions,
 ) -> Result<Resolution, String> {
     let mut state = State {
@@ -455,6 +513,7 @@ pub(crate) fn resolve(
         cfg,
         lock,
         manifest_choice,
+        git,
         inheritance: options.inheritance.as_ref(),
         resolver: options.resolver,
         dev_features: options.dev_features,
@@ -599,66 +658,69 @@ fn process_dependency(
             let directory = path
                 .canonicalize()
                 .map_err(|error| format!("path dependency `{}`: {error}", path.display()))?;
-            let mut file = discover(&directory, context.manifest_choice)?;
-            if file.manifest.is_virtual {
-                return Err(format!(
-                    "path dependency `{}` points at a virtual workspace",
-                    directory.display()
-                ));
-            }
-            match context
-                .inheritance
-                .filter(|inheritance| inheritance.applies(&directory))
-            {
-                Some(inheritance) => file.manifest.inherit(
-                    &inheritance.workspace_dir,
-                    inheritance.shared_package.as_ref(),
-                    inheritance.shared_dependencies.as_ref(),
-                )?,
-                None => apply_inheritance(&mut file, context.manifest_choice)?,
-            }
-            if file.manifest.name != dependency.package {
-                return Err(format!(
-                    "`{}` depends on `{key}` as package `{}`, but `{}` declares package `{}`",
-                    parent_meta.name,
-                    dependency.package,
-                    file.path.display(),
-                    file.manifest.name
-                ));
-            }
-            let meta = Meta::from_manifest(&file.manifest, &file.path, false)?;
-            if dependency.requirement != "*" {
-                check_requirement(&dependency, &meta.version, &parent_meta)?;
-            }
-            let build_context = dependency_context(parent, kind);
-            let id = PackageId {
-                name: meta.name.clone(),
-                version: meta.version.clone(),
-                source: PackageSource::Path(meta.dir.clone()),
-                context: build_context,
-            };
-            if state.packages.contains_key(&id) {
-                check_requirement(&dependency, &state.packages[&id].meta.version, &parent_meta)?;
-                merge_selected(
-                    state,
-                    queue,
-                    &id,
-                    &dependency,
-                    extra_features,
-                    context.resolver,
-                    context.dev_features,
-                );
-                add_edge(state, parent, &id, key, dependency.kind);
-                return Ok(Outcome::Done);
-            }
-            let features = features_for(
-                &meta,
+            let package_source = PackageSource::Path(directory.clone());
+            resolve_path_like(
+                state,
+                queue,
+                parent,
+                key,
                 &dependency,
                 extra_features,
-                context.resolver,
-                context.dev_features,
-            );
-            Ok(Outcome::New(vec![Candidate { id, meta, features }]))
+                context,
+                package_source,
+                &directory,
+            )
+        }
+        DepSource::Git(git_source) => {
+            let git = context.git.ok_or_else(|| {
+                format!(
+                    "dependency `{key}` of `{}` is a git dependency, but no git context is available",
+                    parent_meta.name
+                )
+            })?;
+            let url = git::canonical_url(&git_source.url);
+            let reference = git_reference(git_source).map_err(|error| {
+                format!(
+                    "dependency `{key}` of `{}`: {error}",
+                    parent_meta.name
+                )
+            })?;
+            let rev = match locked_git_rev(context.lock, &url, reference.as_ref()) {
+                Some(rev) => rev,
+                None if git.offline => {
+                    return Err(format!(
+                        "git dependency `{key}` of `{}` points at `{url}`, which is not pinned in the lockfile and offline mode is enabled",
+                        parent_meta.name
+                    ));
+                }
+                None => git.resolve_ref(&url, reference.as_ref())?,
+            };
+            let directory = git::checkout_dir(&git.root, &rev);
+            if git.offline && !directory.join(CARGO_MANIFEST_FILE).is_file() {
+                return Err(format!(
+                    "git checkout for `{url}` at revision `{rev}` is missing and offline mode is enabled",
+                ));
+            }
+            let directory = git::checkout(&git.root, &url, &rev)?;
+            let directory = directory.canonicalize().map_err(|error| {
+                format!("git checkout for `{}`: {error}", directory.display())
+            })?;
+            let package_source = PackageSource::Git {
+                url,
+                reference: reference.clone(),
+                rev: rev.clone(),
+            };
+            resolve_path_like(
+                state,
+                queue,
+                parent,
+                key,
+                &dependency,
+                extra_features,
+                context,
+                package_source,
+                &directory,
+            )
         }
         DepSource::Registry => {
             let name = dependency.package.clone();
@@ -783,6 +845,114 @@ fn process_dependency(
             Ok(Outcome::New(candidates))
         }
     }
+}
+
+fn resolve_path_like(
+    state: &mut State,
+    queue: &mut VecDeque<Task>,
+    parent: &PackageId,
+    key: &str,
+    dependency: &DepMeta,
+    extra_features: &[String],
+    context: &Context<'_>,
+    package_source: PackageSource,
+    directory: &Path,
+) -> Result<Outcome, String> {
+    let parent_meta = state
+        .packages
+        .get(parent)
+        .ok_or_else(|| format!("internal error: parent `{}` is missing", parent.name))?
+        .meta
+        .clone();
+    let mut file = discover(directory, context.manifest_choice)?;
+    if file.manifest.is_virtual {
+        return Err(format!(
+            "`{}` points at a virtual workspace",
+            directory.display()
+        ));
+    }
+    match context
+        .inheritance
+        .filter(|inheritance| inheritance.applies(directory))
+    {
+        Some(inheritance) => file.manifest.inherit(
+            &inheritance.workspace_dir,
+            inheritance.shared_package.as_ref(),
+            inheritance.shared_dependencies.as_ref(),
+        )?,
+        None => apply_inheritance(&mut file, context.manifest_choice)?,
+    }
+    if file.manifest.name != dependency.package {
+        return Err(format!(
+            "`{}` depends on `{key}` as package `{}`, but `{}` declares package `{}`",
+            parent_meta.name,
+            dependency.package,
+            file.path.display(),
+            file.manifest.name
+        ));
+    }
+    let meta = Meta::from_manifest(&file.manifest, &file.path, false)?;
+    if dependency.requirement != "*" {
+        check_requirement(dependency, &meta.version, &parent_meta)?;
+    }
+    let build_context = dependency_context(parent, dependency.kind);
+    let id = PackageId {
+        name: meta.name.clone(),
+        version: meta.version.clone(),
+        source: package_source,
+        context: build_context,
+    };
+    if state.packages.contains_key(&id) {
+        check_requirement(dependency, &state.packages[&id].meta.version, &parent_meta)?;
+        merge_selected(
+            state,
+            queue,
+            &id,
+            dependency,
+            extra_features,
+            context.resolver,
+            context.dev_features,
+        );
+        add_edge(state, parent, &id, key, dependency.kind);
+        return Ok(Outcome::Done);
+    }
+    let features = features_for(
+        &meta,
+        dependency,
+        extra_features,
+        context.resolver,
+        context.dev_features,
+    );
+    Ok(Outcome::New(vec![Candidate { id, meta, features }]))
+}
+
+fn git_reference(source: &GitSource) -> Result<Option<GitRefSelection>, String> {
+    match (&source.branch, &source.tag, &source.rev) {
+        (None, None, None) => Ok(None),
+        (Some(branch), None, None) => Ok(Some(GitRefSelection::Branch(branch.clone()))),
+        (None, Some(tag), None) => Ok(Some(GitRefSelection::Tag(tag.clone()))),
+        (None, None, Some(rev)) => Ok(Some(GitRefSelection::Rev(rev.clone()))),
+        _ => Err("a git dependency cannot combine `branch`, `tag`, and `rev`".to_string()),
+    }
+}
+
+fn locked_git_rev(
+    lock: Option<&Lockfile>,
+    url: &str,
+    reference: Option<&GitRefSelection>,
+) -> Option<String> {
+    let lock = lock?;
+    let refspec = match reference {
+        Some(GitRefSelection::Branch(branch)) => format!("?branch={branch}"),
+        Some(GitRefSelection::Tag(tag)) => format!("?tag={tag}"),
+        Some(GitRefSelection::Rev(rev)) => format!("?rev={rev}"),
+        None => String::new(),
+    };
+    let prefix = format!("git+{url}{refspec}#");
+    lock.packages.iter().find_map(|package| {
+        let sha = package.source.as_ref()?.strip_prefix(&prefix)?;
+        Some(sha.to_string())
+    })
 }
 
 fn check_requirement(dependency: &DepMeta, version: &Version, parent: &Meta) -> Result<(), String> {
@@ -1219,11 +1389,15 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::path::{Path, PathBuf};
 
-    use super::{resolve, BuildContext, PackageSource, Registry, RootOptions, RootPackage};
+    use super::{
+        resolve, BuildContext, GitContext, PackageSource, Registry, RootOptions, RootPackage,
+    };
     use crate::config::ManifestChoice;
     use crate::manifest::Manifest;
     use crate::registry::index::{IndexDependency, IndexEntry};
     use crate::resolver::cfg::Cfg;
+    use crate::resolver::git::test_support::{git_or_skip, TestRepo};
+    use crate::resolver::git::GitRefSelection;
     use crate::resolver::lockfile::{LockPackage, Lockfile, REGISTRY_SOURCE};
     use crate::resolver::resolve::PackageId;
     use crate::resolver::semver::Version;
@@ -1376,6 +1550,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &options(),
         )
         .unwrap_err();
@@ -1397,6 +1572,7 @@ mod tests {
             &cfg(),
             Some(&lock),
             ManifestChoice::Auto,
+            None,
             &options(),
         )
         .unwrap();
@@ -1428,6 +1604,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &options(),
         )
         .unwrap();
@@ -1492,6 +1669,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &options(),
         )
         .unwrap();
@@ -1535,6 +1713,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &options(),
         )
         .unwrap_err();
@@ -1565,6 +1744,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &options(),
         )
         .unwrap();
@@ -1603,6 +1783,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &options(),
         )
         .unwrap();
@@ -1634,6 +1815,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &options(),
         )
         .unwrap();
@@ -1662,6 +1844,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &options(),
         )
         .unwrap();
@@ -1694,6 +1877,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &options(),
         )
         .unwrap();
@@ -1726,6 +1910,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &options(),
         )
         .unwrap();
@@ -1770,6 +1955,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &options(),
         )
         .unwrap();
@@ -1806,6 +1992,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &options(),
         )
         .unwrap();
@@ -1840,6 +2027,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &options(),
         )
         .unwrap();
@@ -1871,6 +2059,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &build,
         )
         .unwrap();
@@ -1895,6 +2084,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &tests,
         )
         .unwrap();
@@ -1919,6 +2109,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &resolver1,
         )
         .unwrap();
@@ -1943,6 +2134,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &implicit,
         )
         .unwrap_err();
@@ -1958,6 +2150,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &full,
         )
         .unwrap();
@@ -1985,6 +2178,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &options,
         )
         .unwrap();
@@ -2017,6 +2211,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &options,
         )
         .unwrap_err();
@@ -2036,6 +2231,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &options(),
         )
         .unwrap_err();
@@ -2057,6 +2253,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &options(),
         )
         .unwrap();
@@ -2094,6 +2291,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &options(),
         )
         .unwrap();
@@ -2117,6 +2315,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &options,
         )
         .unwrap();
@@ -2147,6 +2346,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &options(),
         )
         .unwrap();
@@ -2179,6 +2379,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &resolver2,
         )
         .unwrap();
@@ -2198,6 +2399,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &options(),
         )
         .unwrap();
@@ -2238,6 +2440,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &options(),
         )
         .unwrap();
@@ -2271,6 +2474,7 @@ mod tests {
             &cfg(),
             Some(&lock),
             ManifestChoice::Auto,
+            None,
             &options(),
         )
         .unwrap();
@@ -2289,6 +2493,7 @@ mod tests {
             &cfg(),
             Some(&lock),
             ManifestChoice::Auto,
+            None,
             &locked_options,
         )
         .unwrap();
@@ -2303,6 +2508,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &changed_options,
         )
         .unwrap_err();
@@ -2330,6 +2536,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &options(),
         )
         .unwrap();
@@ -2360,6 +2567,7 @@ mod tests {
             &cfg(),
             None,
             ManifestChoice::Auto,
+            None,
             &options,
         )
         .unwrap();
@@ -2382,5 +2590,281 @@ mod tests {
         let mut set = BTreeSet::new();
         set.insert(id);
         assert_eq!(set.len(), 1);
+    }
+
+    fn git_crate_manifest() -> &'static str {
+        "[package]\nname = \"foo\"\nversion = \"1.2.3\"\n"
+    }
+
+    fn git_dep_field(url: &str, extra: &str) -> String {
+        let field = if extra.is_empty() {
+            format!("git = \"{url}\"")
+        } else {
+            format!("git = \"{url}\", {extra}")
+        };
+        format!("foo = {{ {field} }}")
+    }
+
+    #[test]
+    fn resolves_git_dependencies_end_to_end() {
+        if !git_or_skip() {
+            return;
+        }
+        let repo = TestRepo::new("resolve-e2e");
+        repo.write("Cargo.toml", git_crate_manifest());
+        repo.write("src/lib.rs", "pub fn value() {}\n");
+        let head = repo.commit("init");
+
+        let fixture = Fixture::new("git-e2e");
+        let root = fixture.root(&format!(
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\n{}\n",
+            git_dep_field(&repo.url(), "")
+        ));
+        let mut registry = FakeRegistry::new();
+        let cache = Fixture::new("git-e2e-cache");
+        let git_context = GitContext::new(cache.dir.clone(), false);
+
+        let resolution = resolve(
+            &[root.clone()],
+            &mut registry,
+            &cfg(),
+            None,
+            ManifestChoice::Auto,
+            Some(&git_context),
+            &options(),
+        )
+        .unwrap();
+        let foo = require(&resolution, "foo");
+        match &foo.id.source {
+            PackageSource::Git { url, reference, rev } => {
+                assert_eq!(url, &repo.url());
+                assert!(reference.is_none());
+                assert_eq!(rev, &head);
+            }
+            other => panic!("expected a git source, got {other:?}"),
+        }
+
+        let again = resolve(
+            &[root],
+            &mut registry,
+            &cfg(),
+            None,
+            ManifestChoice::Auto,
+            Some(&git_context),
+            &options(),
+        )
+        .unwrap();
+        let again_foo = require(&again, "foo");
+        assert_eq!(again_foo.id.source, foo.id.source);
+
+        let lock = Lockfile::from_resolution(&resolution);
+        assert!(lock
+            .render()
+            .contains(&format!("source = \"git+{}#{head}\"", repo.url())));
+    }
+
+    #[test]
+    fn git_requirement_mismatch_errors() {
+        if !git_or_skip() {
+            return;
+        }
+        let repo = TestRepo::new("resolve-mismatch");
+        repo.write("Cargo.toml", git_crate_manifest());
+        repo.write("src/lib.rs", "pub fn value() {}\n");
+        repo.commit("init");
+
+        let fixture = Fixture::new("git-mismatch");
+        let root = fixture.root(&format!(
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\n{}\n",
+            git_dep_field(&repo.url(), "version = \"2\"")
+        ));
+        let mut registry = FakeRegistry::new();
+        let cache = Fixture::new("git-mismatch-cache");
+        let git_context = GitContext::new(cache.dir.clone(), false);
+        let error = resolve(
+            &[root],
+            &mut registry,
+            &cfg(),
+            None,
+            ManifestChoice::Auto,
+            Some(&git_context),
+            &options(),
+        )
+        .unwrap_err();
+        assert!(error.contains("requires `foo 2`"), "{error}");
+    }
+
+    #[test]
+    fn locked_git_dependency_uses_the_pinned_rev() {
+        if !git_or_skip() {
+            return;
+        }
+        let repo = TestRepo::new("resolve-locked");
+        repo.write("Cargo.toml", git_crate_manifest());
+        repo.write("src/lib.rs", "// first\n");
+        let first = repo.commit("first");
+        repo.write("src/lib.rs", "// second\n");
+        let second = repo.commit("second");
+        assert_ne!(first, second);
+
+        let fixture = Fixture::new("git-locked");
+        let root = fixture.root(&format!(
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\n{}\n",
+            git_dep_field(&repo.url(), "")
+        ));
+        let lock_text = format!(
+            "version = 4\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\n \"foo\",\n]\n\n[[package]]\nname = \"foo\"\nversion = \"1.2.3\"\nsource = \"git+{}#{}\"\n",
+            repo.url(),
+            first
+        );
+        let lock = Lockfile::parse(&lock_text, Path::new("Cargo.lock")).unwrap();
+        let mut registry = FakeRegistry::new();
+        let cache = Fixture::new("git-locked-cache");
+        let git_context = GitContext::new(cache.dir.clone(), false);
+        let mut locked = options();
+        locked.locked = true;
+        let resolution = resolve(
+            &[root],
+            &mut registry,
+            &cfg(),
+            Some(&lock),
+            ManifestChoice::Auto,
+            Some(&git_context),
+            &locked,
+        )
+        .unwrap();
+        let rev = match &require(&resolution, "foo").id.source {
+            PackageSource::Git { rev, .. } => rev.clone(),
+            other => panic!("expected a git source, got {other:?}"),
+        };
+        assert_eq!(rev, first);
+    }
+
+    #[test]
+    fn offline_git_dependencies_need_a_lock_or_a_checkout() {
+        if !git_or_skip() {
+            return;
+        }
+        let repo = TestRepo::new("resolve-offline");
+        repo.write("Cargo.toml", git_crate_manifest());
+        repo.write("src/lib.rs", "pub fn value() {}\n");
+        let head = repo.commit("init");
+
+        let fixture = Fixture::new("git-offline");
+        let root = fixture.root(&format!(
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\n{}\n",
+            git_dep_field(&repo.url(), "")
+        ));
+        let mut registry = FakeRegistry::new();
+        let cache = Fixture::new("git-offline-cache");
+        let git_context = GitContext::new(cache.dir.clone(), true);
+        let error = resolve(
+            &[root],
+            &mut registry,
+            &cfg(),
+            None,
+            ManifestChoice::Auto,
+            Some(&git_context),
+            &options(),
+        )
+        .unwrap_err();
+        assert!(error.contains("offline"), "{error}");
+        assert!(error.contains(&repo.url()), "{error}");
+
+        let lock_text = format!(
+            "version = 4\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\n \"foo\",\n]\n\n[[package]]\nname = \"foo\"\nversion = \"1.2.3\"\nsource = \"git+{}#{}\"\n",
+            repo.url(),
+            head
+        );
+        let lock = Lockfile::parse(&lock_text, Path::new("Cargo.lock")).unwrap();
+        let fixture = Fixture::new("git-offline-locked");
+        let root = fixture.root(&format!(
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\n{}\n",
+            git_dep_field(&repo.url(), "")
+        ));
+        let error = resolve(
+            &[root],
+            &mut registry,
+            &cfg(),
+            Some(&lock),
+            ManifestChoice::Auto,
+            Some(&git_context),
+            &options(),
+        )
+        .unwrap_err();
+        assert!(error.contains("offline"), "{error}");
+    }
+
+    #[test]
+    fn tag_and_branch_git_deps_select_different_revs() {
+        if !git_or_skip() {
+            return;
+        }
+        let repo = TestRepo::new("resolve-refs");
+        repo.write("Cargo.toml", git_crate_manifest());
+        repo.write("src/lib.rs", "// first\n");
+        let first = repo.commit("first");
+        repo.tag("v1.0.0");
+        repo.write("src/lib.rs", "// second\n");
+        let second = repo.commit("second");
+        assert_ne!(first, second);
+        repo.git(&["branch", "dev"]);
+
+        let tag_fixture = Fixture::new("git-tag");
+        let tag_root = tag_fixture.root(&format!(
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\n{}\n",
+            git_dep_field(&repo.url(), "tag = \"v1.0.0\"")
+        ));
+        let branch_fixture = Fixture::new("git-branch");
+        let branch_root = branch_fixture.root(&format!(
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\n{}\n",
+            git_dep_field(&repo.url(), "branch = \"dev\"")
+        ));
+        let mut registry = FakeRegistry::new();
+        let cache = Fixture::new("git-refs-cache");
+        let git_context = GitContext::new(cache.dir.clone(), false);
+
+        let tag_resolution = resolve(
+            &[tag_root],
+            &mut registry,
+            &cfg(),
+            None,
+            ManifestChoice::Auto,
+            Some(&git_context),
+            &options(),
+        )
+        .unwrap();
+        let branch_resolution = resolve(
+            &[branch_root],
+            &mut registry,
+            &cfg(),
+            None,
+            ManifestChoice::Auto,
+            Some(&git_context),
+            &options(),
+        )
+        .unwrap();
+        let tag_rev = match &require(&tag_resolution, "foo").id.source {
+            PackageSource::Git { rev, .. } => rev.clone(),
+            other => panic!("expected a git source, got {other:?}"),
+        };
+        let branch_rev = match &require(&branch_resolution, "foo").id.source {
+            PackageSource::Git { rev, .. } => rev.clone(),
+            other => panic!("expected a git source, got {other:?}"),
+        };
+        assert_eq!(tag_rev, first);
+        assert_eq!(branch_rev, second);
+
+        let tag_source = crate::resolver::git::source_string(
+            &repo.url(),
+            Some(&GitRefSelection::Tag("v1.0.0".to_string())),
+            &tag_rev,
+        );
+        let branch_source = crate::resolver::git::source_string(
+            &repo.url(),
+            Some(&GitRefSelection::Branch("dev".to_string())),
+            &branch_rev,
+        );
+        assert_ne!(tag_source, branch_source);
     }
 }

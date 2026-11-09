@@ -100,7 +100,16 @@ impl Lockfile {
         let mut versions: Vec<Version> = self
             .packages
             .iter()
-            .filter(|package| package.name == name && package.source.is_some() == registry)
+            .filter(|package| {
+                if package.name != name {
+                    return false;
+                }
+                let from_registry = package
+                    .source
+                    .as_ref()
+                    .is_some_and(|source| source.starts_with(REGISTRY_SOURCE));
+                from_registry == registry
+            })
             .map(|package| package.version.clone())
             .collect();
         versions.sort_by(|left, right| right.cmp(left));
@@ -111,9 +120,18 @@ impl Lockfile {
     pub(crate) fn matches(&self, resolution: &Resolution) -> Result<(), String> {
         let mut expected = BTreeMap::new();
         for (id, package) in &resolution.packages {
-            let source = match id.source {
+            let source = match &id.source {
                 PackageSource::Registry => Some(REGISTRY_SOURCE.to_string()),
                 PackageSource::Path(_) => None,
+                PackageSource::Git {
+                    url,
+                    reference,
+                    rev,
+                } => Some(crate::resolver::git::source_string(
+                    url,
+                    reference.as_ref(),
+                    rev,
+                )),
             };
             let entry = expected
                 .entry((id.name.clone(), package.version.to_string(), source))
@@ -192,9 +210,18 @@ impl Lockfile {
     pub(crate) fn from_resolution(resolution: &Resolution) -> Self {
         let mut merged: BTreeMap<(String, String, Option<String>), LockPackage> = BTreeMap::new();
         for (id, package) in &resolution.packages {
-            let source = match id.source {
+            let source = match &id.source {
                 PackageSource::Registry => Some(REGISTRY_SOURCE.to_string()),
                 PackageSource::Path(_) => None,
+                PackageSource::Git {
+                    url,
+                    reference,
+                    rev,
+                } => Some(crate::resolver::git::source_string(
+                    url,
+                    reference.as_ref(),
+                    rev,
+                )),
             };
             let key = (id.name.clone(), package.version.to_string(), source.clone());
             let dependencies = dependency_strings(resolution, id);

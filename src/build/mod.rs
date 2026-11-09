@@ -16,9 +16,10 @@ use crate::manifest::{DependencyKind, Manifest, ProfileEntry};
 use crate::registry::download::{CrateStore, Request};
 use crate::registry::index::IndexClient;
 use crate::resolver::cfg::Cfg;
+use crate::resolver::git;
 use crate::resolver::lockfile::Lockfile;
 use crate::resolver::resolve::{
-    self, BuildContext, PackageId, PackageSource, Resolution, RootOptions, RootPackage,
+    self, BuildContext, GitContext, PackageId, PackageSource, Resolution, RootOptions, RootPackage,
 };
 use crate::resolver::semver::Version;
 use crate::workspace::{PackageKey, Workspace};
@@ -324,6 +325,8 @@ pub(crate) fn run(
     let cfg = Cfg::cached(&store.root().join("cfg-cache")).map_err(Error::tool)?;
     let mut index = IndexClient::new(config).map_err(Error::tool)?;
     let crate_store = CrateStore::new(config).map_err(Error::tool)?;
+    let git_root = store.root().join("git");
+    let git_context = GitContext::new(git_root.clone(), config.offline);
     let root_options = RootOptions {
         features: options.features.clone(),
         all_features: options.all_features,
@@ -340,6 +343,7 @@ pub(crate) fn run(
         &cfg,
         lock.as_ref(),
         config.manifest,
+        Some(&git_context),
         &root_options,
     )
     .map_err(Error::tool)?;
@@ -357,6 +361,7 @@ pub(crate) fn run(
             &cfg,
             lock.as_ref(),
             config.manifest,
+            Some(&git_context),
             &lock_options,
         )
         .map_err(Error::tool)?;
@@ -367,6 +372,7 @@ pub(crate) fn run(
             &cfg,
             lock.as_ref(),
             config.manifest,
+            Some(&git_context),
             &lock_options,
         )
         .map_err(Error::tool)?;
@@ -420,6 +426,34 @@ pub(crate) fn run(
                     Error::tool(format!("path package `{}` has no manifest path", id.name))
                 })?;
                 (manifest, manifest_path, dir.clone())
+            }
+            PackageSource::Git { url, rev, .. } => {
+                let dir = git::checkout_dir(&git_root, rev);
+                if !dir.join("Cargo.toml").is_file() {
+                    return Err(Error::tool(format!(
+                        "git checkout for `{url}` at revision `{rev}` is missing from `{}`, rerun the build",
+                        dir.display()
+                    )));
+                }
+                let manifest_path = dir.join("Cargo.toml");
+                let text = std::fs::read_to_string(&manifest_path).map_err(|error| {
+                    Error::tool(format!("{}: {error}", manifest_path.display()))
+                })?;
+                let manifest = Manifest::parse(&text, &manifest_path).map_err(Error::tool)?;
+                if manifest.name != id.name {
+                    return Err(Error::tool(format!(
+                        "git checkout for `{url}` declares package `{}`, expected `{}`",
+                        manifest.name, id.name
+                    )));
+                }
+                let version = Version::parse(&manifest.version).map_err(Error::tool)?;
+                if version != package.version {
+                    return Err(Error::tool(format!(
+                        "git checkout for `{url}` declares version `{}`, expected `{}`",
+                        version, package.version
+                    )));
+                }
+                (manifest, manifest_path, dir)
             }
             PackageSource::Registry => {
                 let request = registry_requests
@@ -910,7 +944,7 @@ fn prepare(
         None => {
             let unit_exclusions: &[PathBuf] = match unit.package.source {
                 PackageSource::Path(_) => excluded,
-                PackageSource::Registry => &[],
+                PackageSource::Registry | PackageSource::Git { .. } => &[],
             };
             let hash = source_hash(&unit.package_dir, unit_exclusions, file_hash_cache)
                 .map_err(Error::tool)?;

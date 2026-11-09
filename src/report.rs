@@ -218,6 +218,11 @@ fn source_string(source: &PackageSource) -> String {
     match source {
         PackageSource::Registry => REGISTRY_SOURCE.to_string(),
         PackageSource::Path(directory) => format!("path+{}", directory.display()),
+        PackageSource::Git {
+            url,
+            reference,
+            rev,
+        } => crate::resolver::git::source_string(url, reference.as_ref(), rev),
     }
 }
 

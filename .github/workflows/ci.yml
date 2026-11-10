@@ -45,6 +45,14 @@ jobs:
         run: |
           .\target\bootstrap\rusted.exe new hello
           .\target\bootstrap\rusted.exe run --manifest-path hello/Cargo.toml
+      - name: Smoke test examples, benches, doc, and target
+        run: |
+          $env:RUSTED_CACHE_DIR = "$env:RUNNER_TEMP\rusted-cache"
+          .\target\bootstrap\rusted.exe run --example adder --manifest-path tests/fixtures/examples-fixture/Cargo.toml
+          .\target\bootstrap\rusted.exe test --bench simple --manifest-path tests/fixtures/examples-fixture/Cargo.toml
+          .\target\bootstrap\rusted.exe doc --manifest-path tests/fixtures/examples-fixture/Cargo.toml
+          .\target\bootstrap\rusted.exe build --target x86_64-pc-windows-msvc --manifest-path tests/fixtures/examples-fixture/Cargo.toml
+          Test-Path target/x86_64-pc-windows-msvc/debug
 
   macos:
     runs-on: macos-latest

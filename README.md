@@ -2,7 +2,7 @@
 
 A Cargo-compatible Rust build tool that bootstraps with rustc alone. It keeps one content-addressed cache for compiled artifacts and can build itself.
 
-Pre-1.0. It reads `Cargo.toml` and `rusted.toml`, resolves crates.io dependencies, writes `Cargo.lock`, and builds workspaces with path and registry dependencies. Build scripts, proc macros, resolver 2 features, workspace inheritance, profiles, editions through 2024, pipelined library builds, linker selection, and an S3-compatible remote cache are supported.
+Pre-1.0. It reads `Cargo.toml` and `rusted.toml`, resolves crates.io and git dependencies, writes `Cargo.lock`, and builds workspaces with path, registry, and git dependencies. Build scripts, proc macros, resolver 2 features, workspace inheritance, profiles, editions through 2024, pipelined library builds, linker selection, cross-compilation through `--target`, and an S3-compatible remote cache are supported.
 
 ## Performance
 
@@ -26,7 +26,7 @@ Artifacts live in the shared store, so ten projects that use the same crates com
 
 ## Requirements
 
-Linux, or Windows 10 and 11 x64 with rustc 1.85 or newer, `curl`, and `tar`. Using Rusted on Windows needs no shell, `curl.exe` and `tar.exe` ship with Windows. The `sh` scripts are developer helpers and need WSL or Git Bash, use `scripts/bootstrap.ps1` and `scripts/test.ps1` instead. macOS (Apple Silicon) runs the same rustc-only build and is covered by CI. Tests use `python3`. Cargo is optional and only used by `scripts/lock-compare.sh`.
+Linux, or Windows 10 and 11 x64 with rustc 1.85 or newer, `curl`, and `tar`. Git dependencies additionally need `git` on every platform. Using Rusted on Windows needs no shell, `curl.exe` and `tar.exe` ship with Windows. The `sh` scripts are developer helpers and need WSL or Git Bash, use `scripts/bootstrap.ps1` and `scripts/test.ps1` instead. macOS (Apple Silicon) runs the same rustc-only build and is covered by CI. Tests use `python3`. Cargo is optional and only used by `scripts/lock-compare.sh`.
 
 ## Quick start
 
@@ -40,8 +40,10 @@ Linux, or Windows 10 and 11 x64 with rustc 1.85 or newer, `curl`, and `tar`. Usi
     rusted new <PATH>
     rusted init [PATH]
     rusted build
-    rusted doc
     rusted check
+    rusted clippy
+    rusted doc
+    rusted fmt
     rusted run
     rusted test
     rusted add <NAME>
@@ -53,7 +55,7 @@ Linux, or Windows 10 and 11 x64 with rustc 1.85 or newer, `curl`, and `tar`. Usi
     rusted cache info
     rusted cache gc --max-size <SIZE> [--dry-run] [--remote]
 
-Build flags include `--release`, `--profile`, `--workspace`, `-p`, `--features`, `--all-features`, `--no-default-features`, `--locked`, `--frozen`, `--offline`, `-j`, `--example <NAME>`, `--examples`, `--bench <NAME>`, `--benches`, `--stats`, and `--message-format=json`. Run `rusted help` for the full list.
+Build flags include `--release`, `--profile`, `--workspace`, `-p`, `--features`, `--all-features`, `--no-default-features`, `--locked`, `--frozen`, `--offline`, `--target <TRIPLE>`, `-j`, `--example <NAME>`, `--examples`, `--bench <NAME>`, `--benches`, `--stats`, and `--message-format=json`. Run `rusted help` for the full list.
 
 ## Configuration
 

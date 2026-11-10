@@ -48,9 +48,10 @@
     </p>
     <p class="muted-text">
       Reads <code>Cargo.toml</code> and <code>rusted.toml</code>, resolves
-      crates.io dependencies, writes <code>Cargo.lock</code>, and builds
-      workspaces with path and registry dependencies. No Rust dependencies in
-      the tool itself. Cargo never runs during a build.
+      crates.io and git dependencies, writes <code>Cargo.lock</code>, and
+      builds workspaces with path, registry, and git dependencies. Cross
+      compiles through <code>--target</code>. No Rust dependencies in the tool
+      itself. Cargo never runs during a build.
     </p>
     <div class="flex" style="gap: 0.75rem;">
       <a class="button primary" href="https://github.com/gabriel-aplok/rusted">Source on GitHub</a>
@@ -171,8 +172,10 @@ install -m 755 target/bootstrap/rusted ~/.local/bin/rusted</code></pre>
   <pre><code>rusted new &lt;PATH&gt;
 rusted init [PATH]
 rusted build
-rusted doc
 rusted check
+rusted clippy
+rusted doc
+rusted fmt
 rusted run
 rusted test
 rusted add &lt;NAME&gt;
@@ -188,7 +191,8 @@ rusted cache gc --max-size &lt;SIZE&gt; [--dry-run] [--remote]</code></pre>
     <code>--workspace</code>, <code>-p</code>, <code>--features</code>,
     <code>--all-features</code>, <code>--no-default-features</code>,
     <code>--locked</code>, <code>--frozen</code>, <code>--offline</code>,
-    <code>-j</code>, <code>--example &lt;NAME&gt;</code>,
+    <code>--target &lt;TRIPLE&gt;</code>, <code>-j</code>,
+    <code>--example &lt;NAME&gt;</code>,
     <code>--examples</code>, <code>--bench &lt;NAME&gt;</code>,
     <code>--benches</code>, <code>--stats</code>, and
     <code>--message-format=json</code>. Run <code>rusted help</code> for the
@@ -262,6 +266,7 @@ rusted cache gc --max-size &lt;SIZE&gt; [--dry-run] [--remote]</code></pre>
       <tr><td>Linux</td><td>rustc 1.85 or newer, <code>curl</code>, <code>tar</code></td></tr>
       <tr><td>Windows 10 and 11 x64</td><td>rustc 1.85+ MSVC, <code>curl.exe</code> and <code>tar.exe</code> ship with Windows, VS Build Tools for <code>link.exe</code></td></tr>
       <tr><td>macOS Apple Silicon</td><td>rustc 1.85 or newer, covered by CI</td></tr>
+      <tr><td>Git dependencies</td><td><code>git</code> on PATH, every platform</td></tr>
     </tbody>
   </table>
   <p class="muted-text">

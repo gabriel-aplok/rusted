@@ -6,6 +6,9 @@ All notable changes to this project are recorded here. The format follows Keep a
 
 ### Added
 
+- Git dependencies: `foo = { git = "<url>", branch | tag | rev }` with pinned full revisions in `Cargo.lock`, per-revision source caching, `--locked`, `--offline`, and `rusted update` re-pinning.
+- `rusted doc` builds rustdoc for the workspace lib, bin, and proc-macro targets into `<target>/doc`, reusing compiled dependency artifacts, with `--open`, `--document-private-items`, and `--` pass-through.
+- `--target <TRIPLE>` on `build`, `check`, `run`, `test`, `doc`, and `clippy`: cargo-compatible `<target>/<triple>/<profile>` layout, host-rooted build scripts and proc macros, per-triple cfg caches and artifact keys, and cross-run refusals.
 - `rusted clippy` lints the workspace with clippy-driver, reusing the check pipeline with a separate artifact cache namespace. Extra arguments after `--` reach clippy-driver.
 - `rusted fmt` formats workspace code with rustfmt, grouping one rustfmt invocation per edition, with `--check` support and pass-through arguments after `--`.
 - `build`, `check`, `run`, and `test` accept `--example <NAME>`, `--examples`, `--bench <NAME>`, and `--benches`. Examples build into `<target>/<profile>/examples`, benches compile through the test harness and run with `test`. Benches that declare `harness = false` report an error for now.

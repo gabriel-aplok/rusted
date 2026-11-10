@@ -547,8 +547,15 @@ fn update(options: &Options) -> Result<i32, Failure> {
         return Err(Failure::tool("`--frozen` prevents updating the lockfile"));
     }
     let (config, _, workspace) = load_workspace(options)?;
-    let (resolution, _) =
-        resolve_workspace(&config, &workspace, &workspace.members, None, false, true)?;
+    let (resolution, _) = resolve_workspace(
+        &config,
+        &workspace,
+        &workspace.members,
+        None,
+        false,
+        true,
+        false,
+    )?;
     write_lockfile(&workspace, &resolution)
 }
 
@@ -561,6 +568,7 @@ fn tree(options: &Options) -> Result<i32, Failure> {
         &workspace.default_targets,
         lock.as_ref(),
         options.frozen,
+        false,
         false,
     )?;
     print!("{}", report::tree(&resolution, &roots));
@@ -577,6 +585,7 @@ fn metadata(options: &Options) -> Result<i32, Failure> {
         lock.as_ref(),
         options.frozen,
         true,
+        false,
     )?;
     println!(
         "{}",
@@ -604,6 +613,7 @@ fn vendor(options: &Options) -> Result<i32, Failure> {
         &workspace.members,
         lock.as_ref(),
         options.frozen,
+        true,
         true,
     )?;
 
@@ -761,6 +771,7 @@ fn update_lockfile(options: &Options) -> Result<i32, Failure> {
         lock.as_ref(),
         options.frozen,
         true,
+        false,
     )?;
     if options.frozen {
         return Ok(0);
@@ -798,6 +809,7 @@ fn resolve_workspace(
     lock: Option<&Lockfile>,
     locked: bool,
     all_targets: bool,
+    bypass_vendor: bool,
 ) -> Result<(Resolution, Vec<PackageId>), Failure> {
     if roots.is_empty() {
         return Err(Failure::tool("this workspace has no members"));
@@ -824,7 +836,11 @@ fn resolve_workspace(
 
     let cache_root = cache_root(config).map_err(Failure::tool)?;
     let cfg = Cfg::cached(&cache_root.join("v1").join("cfg-cache"), None).map_err(Failure::tool)?;
-    let replacement = vendor::replacement(&workspace.root_dir).map_err(Failure::tool)?;
+    let replacement = if bypass_vendor {
+        None
+    } else {
+        vendor::replacement(&workspace.root_dir).map_err(Failure::tool)?
+    };
     let mut registry: Box<dyn resolve::Registry> = match &replacement {
         Some(replacement) => Box::new(VendorRegistry::new(replacement.directory.clone())),
         None => Box::new(IndexClient::new(config).map_err(Failure::tool)?),

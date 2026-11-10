@@ -79,17 +79,12 @@ fn profile_dir(target_root: &Path, target: Option<&str>, host: bool, profile: &s
     base.join(profile_dir_name(profile))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum MessageFormat {
+    #[default]
     Human,
     Short,
     Json,
-}
-
-impl Default for MessageFormat {
-    fn default() -> Self {
-        Self::Human
-    }
 }
 
 pub(crate) struct Error {

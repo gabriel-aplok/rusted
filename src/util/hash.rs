@@ -73,16 +73,22 @@ impl Sha256 {
         self.update(&bit_length.to_be_bytes());
 
         let mut digest = [0u8; DIGEST];
-        for (chunk, word) in digest.chunks_exact_mut(4).zip(self.state) {
-            chunk.copy_from_slice(&word.to_be_bytes());
+        for (index, word) in self.state.into_iter().enumerate() {
+            digest[index * 4..][..4].copy_from_slice(&word.to_be_bytes());
         }
         digest
     }
 
     fn compress(&mut self, block: &[u8; BLOCK]) {
         let mut schedule = [0u32; 64];
-        for (index, chunk) in block.chunks_exact(4).enumerate() {
-            schedule[index] = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        for (index, word) in schedule.iter_mut().enumerate().take(BLOCK / 4) {
+            let start = index * 4;
+            *word = u32::from_be_bytes([
+                block[start],
+                block[start + 1],
+                block[start + 2],
+                block[start + 3],
+            ]);
         }
         for index in 16..64 {
             let s0 = schedule[index - 15].rotate_right(7)

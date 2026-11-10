@@ -138,7 +138,7 @@ impl Workspace {
 
 enum RootFile<'a> {
     Selected(&'a ManifestFile),
-    Loaded(ManifestFile),
+    Loaded(Box<ManifestFile>),
 }
 
 impl RootFile<'_> {
@@ -182,7 +182,7 @@ fn find_root(entry: &ManifestFile, choice: ManifestChoice) -> Result<RootFile<'_
 
         let candidate = discover(parent, choice)?;
         if candidate.is_workspace() {
-            return Ok(RootFile::Loaded(candidate));
+            return Ok(RootFile::Loaded(Box::new(candidate)));
         }
     }
 

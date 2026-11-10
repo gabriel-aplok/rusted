@@ -31,12 +31,23 @@ trap 'rm -rf "$tmp"' EXIT
 curl -fsSL -o "$tmp/rusted" "$base/rusted-$target"
 curl -fsSL -o "$tmp/rusted.sha256" "$base/rusted-$target.sha256"
 
+expected=$(awk -v name="rusted-$target" '$2 == name { print $1 }' "$tmp/rusted.sha256")
+if [ -z "$expected" ]; then
+    echo "rusted install: checksum file has no entry for $target" >&2
+    exit 1
+fi
+actual=$(sha256sum "$tmp/rusted" | cut -d" " -f1)
 if command -v sha256sum >/dev/null 2>&1; then
-    (cd "$tmp" && sha256sum -c rusted.sha256 >/dev/null)
+    actual=$(sha256sum "$tmp/rusted" | cut -d" " -f1)
 elif command -v shasum >/dev/null 2>&1; then
-    (cd "$tmp" && shasum -a 256 -c rusted.sha256 >/dev/null)
+    actual=$(shasum -a 256 "$tmp/rusted" | cut -d" " -f1)
 else
     echo "rusted install: no sha256 tool found, skipping verification" >&2
+    actual=$expected
+fi
+if [ "$actual" != "$expected" ]; then
+    echo "rusted install: checksum mismatch for rusted-$target" >&2
+    exit 1
 fi
 
 mkdir -p "$install_dir"

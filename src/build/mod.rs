@@ -3,7 +3,7 @@ pub(crate) mod doc;
 mod feature_split;
 pub(crate) mod fingerprint;
 mod output;
-mod plan;
+pub(crate) mod plan;
 mod rustc;
 pub(crate) mod store;
 
@@ -27,7 +27,7 @@ use crate::workspace::{PackageKey, Workspace};
 
 use build_script::Output as BuildScriptOutput;
 use fingerprint::{artifact_key, rustc_identity, source_hash, RustcIdentity};
-use plan::{PackageInfo, Unit, UnitKind};
+use plan::{PackageInfo, TargetSelection, Unit, UnitKind};
 use rustc::Flags;
 use store::{Artifact, Store};
 
@@ -37,6 +37,8 @@ pub(crate) enum Mode {
     Check,
     Test,
 }
+
+const EXAMPLES_DIR: &str = "examples";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MessageFormat {
@@ -72,9 +74,17 @@ impl Error {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BinaryKind {
+    Bin,
+    Example,
+    Bench,
+}
+
 pub(crate) struct BinaryArtifact {
     pub(crate) name: String,
     pub(crate) path: PathBuf,
+    pub(crate) kind: BinaryKind,
 }
 
 pub(crate) struct BuildResult {
@@ -103,6 +113,7 @@ pub(crate) struct TestArtifact {
 pub(crate) struct Options<'a> {
     pub(crate) targets: &'a [PackageKey],
     pub(crate) mode: Mode,
+    pub(crate) selection: &'a TargetSelection,
     pub(crate) profile: &'a str,
     pub(crate) force: bool,
     pub(crate) incremental: bool,
@@ -396,7 +407,7 @@ pub(crate) fn run(
             .map_err(Error::tool)?;
     }
 
-    let needed = needed_packages(&resolution, &root_ids, options.mode);
+    let needed = needed_packages(&resolution, &root_ids, options.mode, options.selection);
     check_rust_versions(&resolution, &needed, identity.release())?;
 
     let mut registry_requests: BTreeMap<PackageId, Request> = BTreeMap::new();
@@ -515,7 +526,8 @@ pub(crate) fn run(
     }
 
     feature_split::apply(&mut packages, &root_ids);
-    let plan = plan::plan(&packages, &root_ids, options.mode).map_err(Error::tool)?;
+    let plan = plan::plan(&packages, &root_ids, options.mode, options.selection)
+        .map_err(Error::tool)?;
     let build_script_units = build_script_units(&plan);
     let mut build_script_outputs: BTreeMap<PackageId, BuildScriptOutput> = BTreeMap::new();
     let excluded = [canonical(&target_root)?, canonical(store.root())?];
@@ -1007,7 +1019,7 @@ fn prepare(
         &dependency_keys,
     );
     keys[index] = Some(key.clone());
-    let require_nonzero = !(options.mode == Mode::Check && unit.kind == UnitKind::Bin);
+    let require_nonzero = !requires_metadata_only(options.mode, unit.kind);
     let outputs = [(unit.output_name.clone(), require_nonzero)];
 
     if !options.force {
@@ -1133,7 +1145,7 @@ fn package_environment(package: &PackageInfo, unit: &Unit) -> Vec<(String, Strin
 }
 
 fn execute_job(job: Job) -> Result<JobOutcome, JobError> {
-    let require_nonzero = !(job.mode == Mode::Check && job.unit.kind == UnitKind::Bin);
+    let require_nonzero = !requires_metadata_only(job.mode, job.unit.kind);
     let outputs = [(job.unit.output_name.clone(), require_nonzero)];
 
     if !job.force {
@@ -1278,21 +1290,49 @@ fn complete(
 ) -> Result<(), Error> {
     let unit = &plan.units[index];
 
-    if mode == Mode::Build && unit.kind == UnitKind::Bin {
-        let destination = profile_dir.join(&unit.target_name);
-        store
-            .link_into(&artifact.dir.join(&unit.output_name), &destination)
-            .map_err(Error::tool)?;
-        binaries.push(BinaryArtifact {
-            name: unit.target_name.clone(),
-            path: destination,
-        });
-    }
-    if mode == Mode::Test && unit.kind == UnitKind::Test {
-        tests.push(TestArtifact {
-            name: unit.target_name.clone(),
-            path: artifact.dir.join(&unit.output_name),
-        });
+    match (mode, unit.kind) {
+        (Mode::Build, UnitKind::Bin) => {
+            let destination = profile_dir.join(&unit.target_name);
+            store
+                .link_into(&artifact.dir.join(&unit.output_name), &destination)
+                .map_err(Error::tool)?;
+            binaries.push(BinaryArtifact {
+                name: unit.target_name.clone(),
+                path: destination,
+                kind: BinaryKind::Bin,
+            });
+        }
+        (Mode::Build, UnitKind::Example) => {
+            let destination = profile_dir.join(EXAMPLES_DIR).join(&unit.target_name);
+            store
+                .link_into(&artifact.dir.join(&unit.output_name), &destination)
+                .map_err(Error::tool)?;
+            binaries.push(BinaryArtifact {
+                name: unit.target_name.clone(),
+                path: destination,
+                kind: BinaryKind::Example,
+            });
+        }
+        (Mode::Build, UnitKind::Bench) => {
+            binaries.push(BinaryArtifact {
+                name: unit.target_name.clone(),
+                path: artifact.dir.join(&unit.output_name),
+                kind: BinaryKind::Bench,
+            });
+        }
+        (Mode::Test, UnitKind::Test) => {
+            tests.push(TestArtifact {
+                name: unit.target_name.clone(),
+                path: artifact.dir.join(&unit.output_name),
+            });
+        }
+        (Mode::Test, UnitKind::Bench) => {
+            tests.push(TestArtifact {
+                name: unit.target_name.clone(),
+                path: artifact.dir.join(&unit.output_name),
+            });
+        }
+        _ => {}
     }
     if unit.kind == UnitKind::Lib || unit.kind == UnitKind::ProcMacro {
         search_dirs.insert(artifact.dir.clone());
@@ -1304,11 +1344,17 @@ fn complete(
     Ok(())
 }
 
+fn requires_metadata_only(mode: Mode, kind: UnitKind) -> bool {
+    mode == Mode::Check && matches!(kind, UnitKind::Bin | UnitKind::Example | UnitKind::Bench)
+}
+
 fn needed_packages(
     resolution: &Resolution,
     roots: &[PackageId],
     mode: Mode,
+    selection: &TargetSelection,
 ) -> BTreeSet<PackageId> {
+    let with_dev = mode == Mode::Test || !selection.is_empty();
     let mut needed = BTreeSet::new();
     let mut pending: Vec<PackageId> = roots.to_vec();
     while let Some(id) = pending.pop() {
@@ -1319,7 +1365,7 @@ fn needed_packages(
             continue;
         };
         for edge in &package.dependencies {
-            if edge.kind == DependencyKind::Dev && mode != Mode::Test {
+            if edge.kind == DependencyKind::Dev && !with_dev {
                 continue;
             }
             pending.push(edge.package.clone());
@@ -1597,6 +1643,8 @@ fn emit_artifact(
         UnitKind::Lib => "lib",
         UnitKind::Bin => "bin",
         UnitKind::Test => "test",
+        UnitKind::Example => "example",
+        UnitKind::Bench => "bench",
         UnitKind::BuildScript => "custom-build",
         UnitKind::ProcMacro => "proc-macro",
     };

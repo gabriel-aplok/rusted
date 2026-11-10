@@ -302,7 +302,8 @@ pub(crate) fn artifact_key(
         match unit.kind {
             UnitKind::BuildScript => "build-script",
             UnitKind::ProcMacro => "proc-macro",
-            UnitKind::Lib | UnitKind::Bin | UnitKind::Test => match mode {
+            UnitKind::Lib | UnitKind::Bin | UnitKind::Test | UnitKind::Example
+            | UnitKind::Bench => match mode {
                 Mode::Build => "build",
                 Mode::Check => "check",
                 Mode::Test => "test",
@@ -317,6 +318,8 @@ pub(crate) fn artifact_key(
             UnitKind::Lib => "lib",
             UnitKind::Bin => "bin",
             UnitKind::Test => "test",
+            UnitKind::Example => "example",
+            UnitKind::Bench => "bench",
             UnitKind::BuildScript => "build-script",
             UnitKind::ProcMacro => "proc-macro",
         },

@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. The format follows Keep a
 
 ## Unreleased
 
+### Added
+
+- `build`, `check`, `run`, and `test` accept `--example <NAME>`, `--examples`, `--bench <NAME>`, and `--benches`. Examples build into `<target>/<profile>/examples`, benches compile through the test harness and run with `test`. Benches that declare `harness = false` report an error for now.
+
 ### Fixed
 
 - Lockfiles now include dev-only optional dependencies in every build mode.

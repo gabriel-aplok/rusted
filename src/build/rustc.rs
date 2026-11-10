@@ -313,10 +313,10 @@ pub(crate) fn compile(
         UnitKind::Lib => {
             command.arg("--crate-type").arg("lib");
         }
-        UnitKind::Bin | UnitKind::BuildScript => {
+        UnitKind::Bin | UnitKind::Example | UnitKind::BuildScript => {
             command.arg("--crate-type").arg("bin");
         }
-        UnitKind::Test => {
+        UnitKind::Test | UnitKind::Bench => {
             command.arg("--test");
         }
         UnitKind::ProcMacro => {

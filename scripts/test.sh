@@ -113,6 +113,40 @@ if [ "$mode" = integration ] || [ "$mode" = all ]; then
         exit 1
     fi
 
+    fx=tests/fixtures/examples-fixture/Cargo.toml
+
+    "$bin" build --manifest-path "$fx" --target-dir "$it/targets" -q
+    test ! -e "$it/targets/debug/examples/adder"
+
+    clear_log
+    "$bin" build --examples --manifest-path "$fx" --target-dir "$it/targets" -q
+    test -x "$it/targets/debug/examples/adder"
+    expect_rustc
+
+    clear_log
+    "$bin" build --examples --manifest-path "$fx" --target-dir "$it/targets" -q
+    expect_no_rustc
+
+    example_output=$("$bin" run --example adder --manifest-path "$fx" --target-dir "$it/targets" -q)
+    if [ "$example_output" != "adder=7" ]; then
+        echo "unexpected example output: $example_output" >&2
+        exit 1
+    fi
+
+    clear_log
+    "$bin" test --bench simple --manifest-path "$fx" --target-dir "$it/targets" -q > "$it/bench.out"
+    grep -q 'test result: ok' "$it/bench.out"
+    grep -q 'add_works' "$it/bench.out"
+
+    set +e
+    "$bin" build --example missing --manifest-path "$fx" --target-dir "$it/targets" -q >/dev/null 2>&1
+    code=$?
+    set -e
+    if [ "$code" -ne 1 ]; then
+        echo "unknown example should exit 1, got $code" >&2
+        exit 1
+    fi
+
     clear_log
     "$bin" test -p core --manifest-path "$fixture" --target-dir "$it/tests" -q > "$it/tests.out"
     grep -q 'test result: ok' "$it/tests.out"

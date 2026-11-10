@@ -3,7 +3,8 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::build::{self, BinaryArtifact, MessageFormat, Mode};
+use crate::build::{self, BinaryArtifact, BinaryKind, MessageFormat, Mode};
+use crate::build::plan::{TargetList, TargetSelection};
 use crate::cache;
 use crate::config::{cache_root, Config, MAX_PARALLELISM};
 use crate::manifest::edit::{add_dependency, remove_dependency};
@@ -89,6 +90,13 @@ impl CommandKind {
                 | CommandKind::Test
         )
     }
+
+    fn accepts_target_lists(self) -> bool {
+        matches!(
+            self,
+            CommandKind::Build | CommandKind::Check | CommandKind::Run | CommandKind::Test
+        )
+    }
 }
 
 #[derive(Debug, Default)]
@@ -116,6 +124,10 @@ struct Options {
     quiet: bool,
     verbose: bool,
     bin: Option<String>,
+    example: Vec<String>,
+    examples: bool,
+    bench: Vec<String>,
+    benches: bool,
     program_args: Vec<OsString>,
     no_run: bool,
     test_threads: Option<usize>,
@@ -223,6 +235,7 @@ fn build_command(kind: CommandKind, options: &Options) -> Result<i32, Failure> {
 
     let (config, _, workspace) = load_workspace(options)?;
     let targets = select_targets(&workspace, options)?;
+    let selection = run_selection(kind, options)?;
     let jobs = options.jobs.or(config.jobs).unwrap_or_else(default_jobs);
     if options.verbose {
         eprintln!("using {jobs} job(s)");
@@ -238,6 +251,7 @@ fn build_command(kind: CommandKind, options: &Options) -> Result<i32, Failure> {
     let build_options = build::Options {
         targets: &targets,
         mode,
+        selection: &selection,
         profile: &profile,
         force: options.force,
         incremental: options.incremental,
@@ -701,6 +715,62 @@ fn select_targets(workspace: &Workspace, options: &Options) -> Result<Vec<Packag
     Ok(workspace.default_targets.clone())
 }
 
+fn run_selection(kind: CommandKind, options: &Options) -> Result<TargetSelection, Failure> {
+    if kind == CommandKind::Run {
+        if !options.example.is_empty() && !options.bench.is_empty() {
+            return Err(Failure::tool(
+                "`--example` and `--bench` cannot be used together",
+            ));
+        }
+        if options.bin.is_some() && !options.example.is_empty() {
+            return Err(Failure::tool("`--bin` and `--example` cannot be used together"));
+        }
+        if options.bin.is_some() && !options.bench.is_empty() {
+            return Err(Failure::tool("`--bin` and `--bench` cannot be used together"));
+        }
+        if options.example.len() + options.bench.len() > 1 {
+            return Err(Failure::tool(
+                "`run` accepts a single `--example` or `--bench` target",
+            ));
+        }
+    }
+    Ok(TargetSelection {
+        examples: target_list(
+            options.examples,
+            &options.example,
+            "--examples",
+            "--example",
+        )?,
+        benches: target_list(options.benches, &options.bench, "--benches", "--bench")?,
+    })
+}
+
+fn target_list(
+    all: bool,
+    names: &[String],
+    plural: &str,
+    singular: &str,
+) -> Result<TargetList, Failure> {
+    if all {
+        if !names.is_empty() {
+            return Err(Failure::tool(format!(
+                "`{plural}` and `{singular}` cannot be used together"
+            )));
+        }
+        return Ok(TargetList::All);
+    }
+    let mut unique: Vec<String> = Vec::new();
+    for name in names {
+        if !unique.contains(name) {
+            unique.push(name.clone());
+        }
+    }
+    match unique[..] {
+        [] => Ok(TargetList::None),
+        _ => Ok(TargetList::Some(unique)),
+    }
+}
+
 fn select_binary<'a>(
     workspace: &Workspace,
     targets: &[PackageKey],
@@ -710,10 +780,27 @@ fn select_binary<'a>(
     if let Some(name) = &options.bin {
         return binaries
             .iter()
-            .find(|binary| &binary.name == name)
+            .find(|binary| &binary.name == name && binary.kind == BinaryKind::Bin)
             .ok_or_else(|| {
                 Failure::tool(format!(
                     "no binary named `{name}` was built, available: {}",
+                    binary_names(binaries)
+                ))
+            });
+    }
+
+    if !options.example.is_empty() || !options.bench.is_empty() {
+        let (name, flag) = if options.example.is_empty() {
+            (&options.bench[0], "--bench")
+        } else {
+            (&options.example[0], "--example")
+        };
+        return binaries
+            .iter()
+            .find(|binary| &binary.name == name && binary.kind != BinaryKind::Bin)
+            .ok_or_else(|| {
+                Failure::tool(format!(
+                    "no target named `{name}` was built for `{flag}`, available: {}",
                     binary_names(binaries)
                 ))
             });
@@ -857,6 +944,20 @@ where
             "-v" | "--verbose" => options.verbose = true,
             "--bin" if kind == CommandKind::Run => {
                 options.bin = Some(next_value(&mut args, &text)?);
+            }
+            "--example" if kind.accepts_target_lists() => {
+                let value = next_value(&mut args, &text)?;
+                options.example.push(value);
+            }
+            "--examples" if kind.accepts_target_lists() && kind != CommandKind::Run => {
+                options.examples = true
+            }
+            "--bench" if kind.accepts_target_lists() => {
+                let value = next_value(&mut args, &text)?;
+                options.bench.push(value);
+            }
+            "--benches" if kind.accepts_target_lists() && kind != CommandKind::Run => {
+                options.benches = true
             }
             "--no-run" if kind == CommandKind::Test => options.no_run = true,
             "--open" if kind == CommandKind::Doc => options.open = true,
@@ -1304,6 +1405,12 @@ fn print_command_help(kind: CommandKind) {
         println!("      --frozen               Require the lockfile and forbid network access");
         println!("  -j, --jobs <N>             Number of parallel jobs");
     }
+    if kind.accepts_target_lists() {
+        println!("      --example <NAME>       Build only the named example, repeatable");
+        println!("      --examples             Build all examples");
+        println!("      --bench <NAME>         Build only the named bench, repeatable");
+        println!("      --benches              Build all benches");
+    }
     if kind == CommandKind::Run {
         println!("      --bin <NAME>           Run the named binary");
     }
@@ -1362,7 +1469,7 @@ fn command_about(kind: CommandKind) -> &'static str {
 mod tests {
     use std::ffi::OsString;
 
-    use super::{parse_options, CommandKind, COMMANDS, VERSION};
+    use super::{parse_options, run_selection, CommandKind, COMMANDS, TargetList, VERSION};
     use crate::build::MessageFormat;
 
     fn args(values: &[&str]) -> impl Iterator<Item = OsString> {
@@ -1602,5 +1709,53 @@ mod tests {
     fn rejects_unknown_options() {
         let error = parse_options(CommandKind::Build, args(&["--nope"])).unwrap_err();
         assert!(error.message.contains("unexpected option `--nope`"));
+    }
+
+    #[test]
+    fn parses_target_selection_options() {
+        let options = parse_options(
+            CommandKind::Build,
+            args(&["--examples", "--benches", "--bench", "a"]),
+        )
+        .unwrap();
+        assert!(options.examples);
+        assert!(options.benches);
+        assert!(options.example.is_empty());
+        assert_eq!(options.bench, vec!["a"]);
+
+        let options = parse_options(
+            CommandKind::Test,
+            args(&["--example", "x", "--example", "x", "--bench", "y", "--bench", "y"]),
+        )
+        .unwrap();
+        assert_eq!(options.example, vec!["x", "x"]);
+        assert_eq!(options.bench, vec!["y", "y"]);
+
+        let options = parse_options(CommandKind::Run, args(&["--example", "x"])).unwrap();
+        assert_eq!(options.example, vec!["x"]);
+
+        let error = parse_options(CommandKind::Doc, args(&["--examples"])).unwrap_err();
+        assert!(error.message.contains("unexpected option `--examples`"));
+    }
+
+    #[test]
+    fn target_selection_from_run_options() {
+        let options =
+            parse_options(CommandKind::Run, args(&["--example", "x", "--bench", "y"]))
+                .unwrap();
+        let error = run_selection(CommandKind::Run, &options).unwrap_err();
+        assert!(error.message.contains("cannot be used together"));
+
+        let options = parse_options(CommandKind::Run, args(&["--example", "x"])).unwrap();
+        let selection = run_selection(CommandKind::Run, &options).unwrap();
+        assert!(matches!(
+            selection.examples,
+            TargetList::Some(ref names) if names == &vec!["x".to_string()]
+        ));
+        assert!(matches!(selection.benches, TargetList::None));
+
+        let options = parse_options(CommandKind::Build, args(&["--examples"])).unwrap();
+        let selection = run_selection(CommandKind::Build, &options).unwrap();
+        assert!(matches!(selection.examples, TargetList::All));
     }
 }

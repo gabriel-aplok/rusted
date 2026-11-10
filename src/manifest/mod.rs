@@ -5,7 +5,7 @@ pub(crate) mod select;
 use std::path::Path;
 
 pub(crate) use schema::{
-    BuildScript, Dependency, DependencyKind, Edition, GitSource, Manifest, ProfileEntry,
+    BuildScript, Dependency, DependencyKind, Edition, GitSource, Manifest, ProfileEntry, TargetSpec,
     Workspace as WorkspaceConfig,
 };
 

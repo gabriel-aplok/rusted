@@ -155,7 +155,9 @@ pub(super) fn collect_doc_targets(
     for unit in plan.units.iter() {
         match unit.kind {
             UnitKind::Lib | UnitKind::Bin | UnitKind::ProcMacro => {}
-            UnitKind::Test | UnitKind::BuildScript => continue,
+            UnitKind::Example | UnitKind::Bench | UnitKind::Test | UnitKind::BuildScript => {
+                continue
+            }
         }
         if !root_set.contains(&unit.package) {
             continue;

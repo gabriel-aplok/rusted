@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use crate::manifest::{Edition, Manifest};
+use crate::manifest::{Edition, Manifest, TargetSpec};
 use crate::resolver::resolve::{BuildContext, PackageId, ResolvedDependency};
 
 use super::Mode;
@@ -24,6 +24,7 @@ pub(crate) struct PackageInfo {
 }
 
 #[derive(Clone)]
+#[derive(Debug)]
 pub(crate) struct Unit {
     pub(crate) package: PackageId,
     pub(crate) package_name: String,
@@ -41,17 +42,49 @@ pub(crate) struct Unit {
     pub(crate) cap_lints: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum UnitKind {
     Lib,
     Bin,
     Test,
+    Example,
+    Bench,
     BuildScript,
     ProcMacro,
 }
 
+#[derive(Debug)]
 pub(crate) struct Plan {
     pub(crate) units: Vec<Unit>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TargetList {
+    None,
+    All,
+    Some(Vec<String>),
+}
+
+#[derive(Debug)]
+pub(crate) struct TargetSelection {
+    pub(crate) examples: TargetList,
+    pub(crate) benches: TargetList,
+}
+
+impl TargetList {
+    fn selects(&self, name: &str) -> bool {
+        match self {
+            TargetList::None => false,
+            TargetList::All => true,
+            TargetList::Some(names) => names.iter().any(|candidate| candidate == name),
+        }
+    }
+}
+
+impl TargetSelection {
+    pub(crate) fn is_empty(&self) -> bool {
+        matches!(self.examples, TargetList::None) && matches!(self.benches, TargetList::None)
+    }
 }
 
 struct LibTarget {
@@ -66,7 +99,7 @@ struct BinTarget {
     path: PathBuf,
 }
 
-struct TestTarget {
+struct NamedTarget {
     name: String,
     path: PathBuf,
 }
@@ -75,6 +108,7 @@ pub(crate) fn plan(
     packages: &BTreeMap<PackageId, PackageInfo>,
     roots: &[PackageId],
     mode: Mode,
+    selection: &TargetSelection,
 ) -> Result<Plan, String> {
     let root_set: BTreeSet<&PackageId> = roots.iter().collect();
 
@@ -96,11 +130,15 @@ pub(crate) fn plan(
     }
 
     let mut outputs: BTreeMap<String, String> = BTreeMap::new();
+    let mut example_outputs: BTreeMap<String, String> = BTreeMap::new();
+    let mut example_names: BTreeSet<String> = BTreeSet::new();
+    let mut bench_names: BTreeSet<String> = BTreeSet::new();
 
     let mut units = Vec::new();
     for (id, package) in packages {
-        let normal_externs = externs_for(package, &lib_outputs, mode, false)?;
-        let build_externs = externs_for(package, &lib_outputs, mode, true)?;
+        let normal_externs = externs_for(package, &lib_outputs, mode, false, false)?;
+        let build_externs = externs_for(package, &lib_outputs, mode, false, true)?;
+        let dev_externs = externs_for(package, &lib_outputs, mode, true, false)?;
         let cap_lints = !root_set.contains(id);
 
         if let Some(script) = build_script_path(&package.dir, &package.manifest)? {
@@ -321,9 +359,113 @@ pub(crate) fn plan(
                 }
             }
         }
+
+        let target_context = package.id.context == BuildContext::Target;
+
+        if target_context && !matches!(selection.examples, TargetList::None) {
+            for target in example_targets(&package.dir, &package.manifest)? {
+                example_names.insert(target.name.clone());
+                if !selection.examples.selects(&target.name) {
+                    continue;
+                }
+                let crate_name = normalize_name(&target.name);
+                let mut externs = dev_externs.clone();
+                add_own_lib(&mut externs, id, &lib_outputs, package)?;
+                let output_name = match mode {
+                    Mode::Check => format!("{crate_name}.rmeta"),
+                    Mode::Build | Mode::Test => target.name.clone(),
+                };
+                if let Some(previous) =
+                    example_outputs.insert(output_name.clone(), id.name.clone())
+                {
+                    return Err(format!(
+                        "packages `{previous}` and `{}` both produce `{output_name}`",
+                        id.name
+                    ));
+                }
+                units.push(Unit {
+                    package: id.clone(),
+                    package_name: package.manifest.name.clone(),
+                    package_version: package.manifest.version.clone(),
+                    package_dir: package.dir.clone(),
+                    target_name: target.name.clone(),
+                    crate_name,
+                    edition: package.manifest.edition,
+                    kind: UnitKind::Example,
+                    source: target.path,
+                    output_name,
+                    metadata_name: None,
+                    externs,
+                    features: package.features.iter().cloned().collect(),
+                    cap_lints,
+                });
+            }
+        }
+
+        if target_context && !matches!(selection.benches, TargetList::None) {
+            for target in bench_targets(&package.dir, &package.manifest)? {
+                bench_names.insert(target.name.clone());
+                if !selection.benches.selects(&target.name) {
+                    continue;
+                }
+                let crate_name = normalize_name(&target.name);
+                let mut externs = dev_externs.clone();
+                add_own_lib(&mut externs, id, &lib_outputs, package)?;
+                let output_name = format!("{crate_name}-test");
+                if let Some(previous) = outputs.insert(output_name.clone(), id.name.clone()) {
+                    return Err(format!(
+                        "packages `{previous}` and `{}` both produce `{output_name}`",
+                        id.name
+                    ));
+                }
+                units.push(Unit {
+                    package: id.clone(),
+                    package_name: package.manifest.name.clone(),
+                    package_version: package.manifest.version.clone(),
+                    package_dir: package.dir.clone(),
+                    target_name: target.name.clone(),
+                    crate_name,
+                    edition: package.manifest.edition,
+                    kind: UnitKind::Bench,
+                    source: target.path,
+                    output_name,
+                    metadata_name: None,
+                    externs,
+                    features: package.features.iter().cloned().collect(),
+                    cap_lints,
+                });
+            }
+        }
     }
 
+    validate_selection(&selection.examples, &example_names, "example")?;
+    validate_selection(&selection.benches, &bench_names, "bench")?;
+
     Ok(Plan { units })
+}
+
+fn validate_selection(
+    list: &TargetList,
+    available: &BTreeSet<String>,
+    kind: &str,
+) -> Result<(), String> {
+    let TargetList::Some(names) = list else {
+        return Ok(());
+    };
+    for name in names {
+        if available.contains(name.as_str()) {
+            continue;
+        }
+        let found = if available.is_empty() {
+            "none".to_string()
+        } else {
+            available.iter().cloned().collect::<Vec<_>>().join(", ")
+        };
+        return Err(format!(
+            "no {kind} target named `{name}` in the selected packages, available: {found}"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_package(package: &PackageInfo) -> Result<(), String> {
@@ -365,6 +507,7 @@ fn externs_for(
     package: &PackageInfo,
     lib_outputs: &BTreeMap<PackageId, (String, String)>,
     mode: Mode,
+    dev_dependencies: bool,
     build_dependencies: bool,
 ) -> Result<Vec<(String, PackageId)>, String> {
     let mut externs: BTreeMap<String, PackageId> = BTreeMap::new();
@@ -373,7 +516,8 @@ fn externs_for(
             edge.kind == crate::manifest::DependencyKind::Build
         } else {
             edge.kind == crate::manifest::DependencyKind::Normal
-                || (mode == Mode::Test && edge.kind == crate::manifest::DependencyKind::Dev)
+                || ((mode == Mode::Test || dev_dependencies)
+                    && edge.kind == crate::manifest::DependencyKind::Dev)
         };
         if !include {
             continue;
@@ -557,80 +701,141 @@ fn default_bin_path(dir: &Path, name: &str, package_name: &str) -> Result<PathBu
     ))
 }
 
-fn test_targets(dir: &Path, manifest: &Manifest) -> Result<Vec<TestTarget>, String> {
-    let mut tests: Vec<TestTarget> = Vec::new();
-    let package_name = &manifest.name;
+fn test_targets(dir: &Path, manifest: &Manifest) -> Result<Vec<NamedTarget>, String> {
+    named_targets(
+        dir,
+        manifest,
+        "test",
+        "tests",
+        &manifest.tests,
+        manifest.autodiscovery.tests,
+    )
+}
 
-    for target in &manifest.tests {
-        let name = match target.name.clone() {
+fn example_targets(dir: &Path, manifest: &Manifest) -> Result<Vec<NamedTarget>, String> {
+    named_targets(
+        dir,
+        manifest,
+        "example",
+        "examples",
+        &manifest.examples,
+        manifest.autodiscovery.examples,
+    )
+}
+
+fn bench_targets(dir: &Path, manifest: &Manifest) -> Result<Vec<NamedTarget>, String> {
+    for spec in &manifest.benches {
+        if spec.harness != Some(false) {
+            continue;
+        }
+        let name = match (&spec.name, &spec.path) {
+            (Some(name), _) => name.clone(),
+            (None, Some(path)) => derive_target_name(Path::new(path)),
+            (None, None) => {
+                return Err(format!(
+                    "bench target in package `{}` uses `harness = false`",
+                    manifest.name
+                ))
+            }
+        };
+        return Err(format!(
+            "package `{}` bench target `{name}` uses `harness = false`, which rusted does not support yet",
+            manifest.name
+        ));
+    }
+    named_targets(
+        dir,
+        manifest,
+        "bench",
+        "benches",
+        &manifest.benches,
+        manifest.autodiscovery.benches,
+    )
+}
+
+fn named_targets(
+    dir: &Path,
+    manifest: &Manifest,
+    kind: &str,
+    directory_name: &str,
+    specs: &[TargetSpec],
+    autodiscover: Option<bool>,
+) -> Result<Vec<NamedTarget>, String> {
+    let mut targets: Vec<NamedTarget> = Vec::new();
+    let package_name = &manifest.name;
+    let directory = dir.join(directory_name);
+
+    for spec in specs {
+        let name = match spec.name.clone() {
             Some(name) => name,
-            None => match &target.path {
-                Some(path) => derive_test_name(Path::new(path)),
+            None => match &spec.path {
+                Some(path) => derive_target_name(Path::new(path)),
                 None => {
                     return Err(format!(
-                        "test target in package `{package_name}` needs a name or a path"
+                        "{kind} target in package `{package_name}` needs a name or a path"
                     ))
                 }
             },
         };
-        let path = match &target.path {
+        let path = match &spec.path {
             Some(path) => dir.join(path),
-            None => default_test_path(dir, &name)?,
+            None => default_named_path(&directory, kind, &name)?,
         };
-        tests.push(TestTarget { name, path });
+        targets.push(NamedTarget { name, path });
     }
 
-    if manifest.autodiscovery.tests != Some(false) {
-        let directory = dir.join("tests");
-        if directory.is_dir() {
-            let mut entries: Vec<PathBuf> = std::fs::read_dir(&directory)
+    if autodiscover != Some(false) {
+        let mut entries: Vec<PathBuf> = if directory.is_dir() {
+            std::fs::read_dir(&directory)
                 .map_err(|error| format!("{}: {error}", directory.display()))?
                 .filter_map(|entry| entry.ok())
                 .map(|entry| entry.path())
-                .collect();
-            entries.sort();
-            for path in entries {
-                if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
-                    if tests.iter().any(|test| test.path == path) {
-                        continue;
-                    }
-                    let Some(name) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                .collect()
+        } else {
+            Vec::new()
+        };
+        entries.sort();
+        for path in entries {
+            if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
+                if targets.iter().any(|target| target.path == path) {
+                    continue;
+                }
+                let Some(name) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                    continue;
+                };
+                targets.push(NamedTarget {
+                    name: name.to_string(),
+                    path,
+                });
+            } else if path.is_dir() {
+                let main = path.join("main.rs");
+                if main.is_file() && !targets.iter().any(|target| target.path == main) {
+                    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
                         continue;
                     };
-                    tests.push(TestTarget {
+                    targets.push(NamedTarget {
                         name: name.to_string(),
-                        path,
+                        path: main,
                     });
-                } else if path.is_dir() {
-                    let main = path.join("main.rs");
-                    if main.is_file() && !tests.iter().any(|test| test.path == main) {
-                        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-                            continue;
-                        };
-                        tests.push(TestTarget {
-                            name: name.to_string(),
-                            path: main,
-                        });
-                    }
                 }
             }
         }
     }
 
-    for test in &tests {
-        if !test.path.is_file() {
+    for target in &targets {
+        if !target.path.is_file() {
             return Err(format!(
-                "test `{}` of package `{package_name}` points at missing source `{}`",
-                test.name,
-                test.path.display()
+                "{kind} `{}` of package `{package_name}` points at missing source `{}`",
+                target.name,
+                target.path.display()
             ));
         }
     }
 
-    Ok(tests)
+    Ok(targets)
 }
 
-fn derive_test_name(path: &Path) -> String {
+fn derive_target_name(path: &Path) -> String {
     if path.file_name().and_then(|name| name.to_str()) == Some("main.rs") {
         if let Some(parent) = path.parent().and_then(|parent| parent.file_name()) {
             return parent.to_string_lossy().into_owned();
@@ -638,21 +843,21 @@ fn derive_test_name(path: &Path) -> String {
     }
     path.file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "test".to_string())
+        .unwrap_or_else(|| "target".to_string())
 }
 
-fn default_test_path(package_dir: &Path, name: &str) -> Result<PathBuf, String> {
-    let flat = package_dir.join("tests").join(format!("{name}.rs"));
+fn default_named_path(directory: &Path, kind: &str, name: &str) -> Result<PathBuf, String> {
+    let flat = directory.join(format!("{name}.rs"));
     if flat.is_file() {
         return Ok(flat);
     }
-    let nested = package_dir.join("tests").join(name).join("main.rs");
+    let nested = directory.join(name).join("main.rs");
     if nested.is_file() {
         return Ok(nested);
     }
     Err(format!(
-        "test `{name}` has no path and no default source file in `{}`",
-        package_dir.display()
+        "{kind} `{name}` has no path and no default source file in `{}`",
+        directory.display()
     ))
 }
 
@@ -662,11 +867,241 @@ pub(crate) fn normalize_name(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_name;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::path::PathBuf;
+
+    use super::{normalize_name, plan, PackageInfo, TargetList, TargetSelection, UnitKind};
+    use crate::build::Mode;
+    use crate::manifest::Manifest;
+    use crate::resolver::resolve::{BuildContext, PackageId, PackageSource};
+    use crate::resolver::semver::Version;
 
     #[test]
     fn crate_names_use_underscores() {
         assert_eq!(normalize_name("foo-bar"), "foo_bar");
         assert_eq!(normalize_name("plain"), "plain");
+    }
+
+    struct Fixture {
+        dir: PathBuf,
+    }
+
+    impl Fixture {
+        fn new(name: &str, manifest: &str, files: &[(&str, &str)]) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "rusted-plan-{}-{name}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join("src")).unwrap();
+            std::fs::write(dir.join("src/lib.rs"), "pub fn value() -> u32 { 7 }\n").unwrap();
+            std::fs::write(dir.join("Cargo.toml"), manifest).unwrap();
+            for (file, body) in files {
+                let path = dir.join(file);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, body).unwrap();
+            }
+            Self { dir }
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    const BASE_MANIFEST: &str = "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
+
+    fn packages(fixture: &Fixture) -> BTreeMap<PackageId, PackageInfo> {
+        let id = PackageId {
+            name: "demo".to_string(),
+            version: Version::parse("0.1.0").unwrap(),
+            source: PackageSource::Path(fixture.dir.clone()),
+            context: BuildContext::Target,
+        };
+        let manifest_path = fixture.dir.join("Cargo.toml");
+        let text = std::fs::read_to_string(&manifest_path).unwrap();
+        let manifest = Manifest::parse(&text, &manifest_path).unwrap();
+        let mut packages = BTreeMap::new();
+        packages.insert(
+            id.clone(),
+            PackageInfo {
+                id,
+                manifest,
+                manifest_path,
+                dir: fixture.dir.clone(),
+                features: BTreeSet::new(),
+                dependencies: Vec::new(),
+            },
+        );
+        packages
+    }
+
+    fn selection(examples: TargetList, benches: TargetList) -> TargetSelection {
+        TargetSelection { examples, benches }
+    }
+
+    fn example_selection() -> TargetSelection {
+        selection(TargetList::All, TargetList::None)
+    }
+
+    fn bench_selection(names: &[&str]) -> TargetSelection {
+        selection(
+            TargetList::None,
+            TargetList::Some(names.iter().map(|name| name.to_string()).collect()),
+        )
+    }
+
+    #[test]
+    fn examples_and_benches_need_selection() {
+        let fixture = Fixture::new(
+            "unselected",
+            BASE_MANIFEST,
+            &[
+                ("examples/adder.rs", "fn main() {}\n"),
+                ("benches/simple.rs", "#[test]\nfn add_works() {}\n"),
+            ],
+        );
+        let map = packages(&fixture);
+        let root = vec![map.keys().next().unwrap().clone()];
+        let plan = plan(&map, &root, Mode::Build, &selection(TargetList::None, TargetList::None))
+            .unwrap();
+        assert!(!plan.units.iter().any(|unit| {
+            matches!(unit.kind, UnitKind::Example | UnitKind::Bench)
+        }));
+    }
+
+    #[test]
+    fn examples_build_when_selected() {
+        let fixture = Fixture::new(
+            "selected",
+            BASE_MANIFEST,
+            &[
+                ("examples/adder.rs", "fn main() {}\n"),
+                ("examples/echo/main.rs", "fn main() {}\n"),
+                ("benches/simple.rs", "#[test]\nfn add_works() {}\n"),
+            ],
+        );
+        let map = packages(&fixture);
+        let root = vec![map.keys().next().unwrap().clone()];
+        let build = plan(&map, &root, Mode::Build, &example_selection()).unwrap();
+        let examples: Vec<_> = build
+            .units
+            .iter()
+            .filter(|unit| unit.kind == UnitKind::Example)
+            .collect();
+        assert_eq!(examples.len(), 2);
+        let adder = examples
+            .iter()
+            .find(|unit| unit.target_name == "adder")
+            .unwrap();
+        assert_eq!(adder.crate_name, "adder");
+        assert_eq!(adder.output_name, "adder");
+        assert!(adder
+            .externs
+            .iter()
+            .any(|(name, _)| name == "demo"));
+        assert_eq!(adder.source, fixture.dir.join("examples/adder.rs"));
+        assert!(examples.iter().any(|unit| unit.target_name == "echo"));
+
+        let check = plan(&map, &root, Mode::Check, &example_selection()).unwrap();
+        let adder = check
+            .units
+            .iter()
+            .find(|unit| unit.kind == UnitKind::Example && unit.target_name == "adder")
+            .unwrap();
+        assert_eq!(adder.output_name, "adder.rmeta");
+
+        let test = plan(&map, &root, Mode::Test, &example_selection()).unwrap();
+        assert!(test
+            .units
+            .iter()
+            .any(|unit| unit.kind == UnitKind::Example));
+    }
+
+    #[test]
+    fn benches_compile_like_tests() {
+        let fixture = Fixture::new(
+            "benches",
+            BASE_MANIFEST,
+            &[("benches/simple.rs", "#[test]\nfn add_works() {}\n")],
+        );
+        let map = packages(&fixture);
+        let root = vec![map.keys().next().unwrap().clone()];
+        let build = plan(&map, &root, Mode::Build, &bench_selection(&["simple"])).unwrap();
+        let bench = build
+            .units
+            .iter()
+            .find(|unit| unit.kind == UnitKind::Bench)
+            .unwrap();
+        assert_eq!(bench.target_name, "simple");
+        assert_eq!(bench.crate_name, "simple");
+        assert_eq!(bench.output_name, "simple-test");
+        assert!(bench.externs.iter().any(|(name, _)| name == "demo"));
+
+        let test = plan(
+            &map,
+            &root,
+            Mode::Test,
+            &bench_selection(&["simple"]),
+        )
+        .unwrap();
+        assert!(test.units.iter().any(|unit| unit.kind == UnitKind::Bench));
+    }
+
+    #[test]
+    fn unknown_selected_names_fail() {
+        let fixture = Fixture::new(
+            "unknown-name",
+            BASE_MANIFEST,
+            &[("examples/adder.rs", "fn main() {}\n")],
+        );
+        let map = packages(&fixture);
+        let root = vec![map.keys().next().unwrap().clone()];
+        let sel = selection(
+            TargetList::Some(vec!["missing".to_string()]),
+            TargetList::None,
+        );
+        let error = plan(&map, &root, Mode::Build, &sel).unwrap_err();
+        assert!(error.contains("no example target named `missing`"), "{error}");
+        assert!(error.contains("adder"), "{error}");
+
+        let sel = selection(TargetList::None, TargetList::Some(vec!["gone".to_string()]));
+        let error = plan(&map, &root, Mode::Build, &sel).unwrap_err();
+        assert!(error.contains("no bench target named `gone`"), "{error}");
+    }
+
+    #[test]
+    fn duplicate_examples_fail() {
+        let manifest = format!(
+            "{BASE_MANIFEST}[[example]]\nname = \"dup\"\npath = \"examples/one.rs\"\n[[example]]\nname = \"dup\"\npath = \"examples/two.rs\"\n"
+        );
+        let fixture = Fixture::new(
+            "dup-examples",
+            &manifest,
+            &[
+                ("examples/one.rs", "fn main() {}\n"),
+                ("examples/two.rs", "fn main() {}\n"),
+            ],
+        );
+        let map = packages(&fixture);
+        let root = vec![map.keys().next().unwrap().clone()];
+        let selection = selection(TargetList::All, TargetList::None);
+        let error = plan(&map, &root, Mode::Build, &selection).unwrap_err();
+        assert!(error.contains("both produce `dup`"), "{error}");
+    }
+
+    #[test]
+    fn harness_false_benches_fail() {
+        let manifest = format!("{BASE_MANIFEST}[[bench]]\nname = \"custom\"\nharness = false\npath = \"benches/custom.rs\"\n");
+        let fixture = Fixture::new("harness-off", &manifest, &[]);
+        let map = packages(&fixture);
+        let root = vec![map.keys().next().unwrap().clone()];
+        let error = plan(&map, &root, Mode::Build, &bench_selection(&["custom"]))
+            .unwrap_err();
+        assert!(error.contains("harness = false"), "{error}");
+        assert!(error.contains("demo"), "{error}");
+        assert!(error.contains("custom"), "{error}");
     }
 }

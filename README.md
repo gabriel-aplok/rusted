@@ -53,7 +53,7 @@ Linux, or Windows 10 and 11 x64 with rustc 1.85 or newer, `curl`, and `tar`. Usi
     rusted cache info
     rusted cache gc --max-size <SIZE> [--dry-run] [--remote]
 
-Build flags include `--release`, `--profile`, `--workspace`, `-p`, `--features`, `--all-features`, `--no-default-features`, `--locked`, `--frozen`, `--offline`, `-j`, `--stats`, and `--message-format=json`. Run `rusted help` for the full list.
+Build flags include `--release`, `--profile`, `--workspace`, `-p`, `--features`, `--all-features`, `--no-default-features`, `--locked`, `--frozen`, `--offline`, `-j`, `--example <NAME>`, `--examples`, `--bench <NAME>`, `--benches`, `--stats`, and `--message-format=json`. Run `rusted help` for the full list.
 
 ## Configuration
 

@@ -7,6 +7,7 @@ All notable changes to this project are recorded here. The format follows Keep a
 ### Added
 
 - Tag release pipeline with musl Linux, aarch64 Linux, macOS arm64, and Windows binaries, sha256 checksums, and an install script.
+- Windows installer in PowerShell: sha256 check, install in LOCALAPPDATA, and user Path update.
 
 ### Added
 

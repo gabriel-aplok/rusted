@@ -41,7 +41,13 @@ One command, no dependence on Rust or Cargo on the target machine:
 
     curl -fsSL https://github.com/gabriel-aplok/rusted/raw/main/install.sh | sh
 
-It downloads the latest GitHub release, checks its sha256, and installs the binary in `$HOME/.local/bin`. Set `RUSTED_INSTALL_DIR` to pick another directory. Windows users download `rusted-x86_64-pc-windows-msvc.exe` from the release page.
+It downloads the latest GitHub release, checks its sha256, and installs the binary in `$HOME/.local/bin`. Set `RUSTED_INSTALL_DIR` to pick another directory.
+
+Windows users open PowerShell and run:
+
+    irm https://github.com/gabriel-aplok/rusted/raw/main/scripts/install.ps1 | iex
+
+It installs `rusted.exe` in `%LOCALAPPDATA%\Programs\rusted`, adds that directory to the user Path, and prints the version. `-InstallDir` picks another directory, and `-Version` pins a tag.
 
 ## Commands
 

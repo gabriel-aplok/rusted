@@ -76,6 +76,10 @@ jobs:
           .\target\bootstrap\rusted.exe doc --manifest-path tests/fixtures/examples-fixture/Cargo.toml
           .\target\bootstrap\rusted.exe build --target x86_64-pc-windows-msvc --manifest-path tests/fixtures/examples-fixture/Cargo.toml
           Test-Path target/x86_64-pc-windows-msvc/debug
+      - name: Smoke installer
+        run: |
+          .\scripts\install.ps1 -InstallDir "$env:RUNNER_TEMP\rusted-install"
+          & "$env:RUNNER_TEMP\rusted-install\rusted.exe" --version
 
   macos:
     runs-on: macos-latest

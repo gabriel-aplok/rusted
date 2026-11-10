@@ -441,7 +441,7 @@ mod tests {
         write(
             &temp.path.join(".cargo/config.toml"),
             &format!(
-                "[source.crates-io]\nreplace-with = \"vendored\"\n\n[source.vendored]\ndirectory = \"{}\"\n",
+                "[source.crates-io]\nreplace-with = 'vendored'\n\n[source.vendored]\ndirectory = '{}'\n",
                 vendor.display()
             ),
         );

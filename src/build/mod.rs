@@ -1,4 +1,5 @@
 mod build_script;
+pub(crate) mod doc;
 mod feature_split;
 pub(crate) mod fingerprint;
 mod output;
@@ -79,6 +80,19 @@ pub(crate) struct BinaryArtifact {
 pub(crate) struct BuildResult {
     pub(crate) binaries: Vec<BinaryArtifact>,
     pub(crate) tests: Vec<TestArtifact>,
+    pub(crate) docs: Vec<DocTarget>,
+}
+
+pub(crate) struct DocTarget {
+    pub(crate) crate_name: String,
+    pub(crate) source: PathBuf,
+    pub(crate) edition: crate::manifest::Edition,
+    pub(crate) externs: Vec<(String, PathBuf)>,
+    pub(crate) search_dirs: Vec<PathBuf>,
+    pub(crate) cfgs: Vec<String>,
+    pub(crate) env: Vec<(String, String)>,
+    pub(crate) out_dir: PathBuf,
+    pub(crate) proc_macro_crate: bool,
 }
 
 pub(crate) struct TestArtifact {
@@ -103,6 +117,7 @@ pub(crate) struct Options<'a> {
     pub(crate) locked: bool,
     pub(crate) target_dir: Option<&'a Path>,
     pub(crate) profiles: &'a BTreeMap<String, ProfileEntry>,
+    pub(crate) document: bool,
 }
 
 enum Preparation {
@@ -874,7 +889,25 @@ pub(crate) fn run(
         );
     }
 
-    Ok(BuildResult { binaries, tests })
+    let docs = if options.document {
+        doc::collect_doc_targets(
+            &plan,
+            &packages,
+            &build_script_outputs,
+            &root_ids,
+            &artifacts,
+            &search_dirs,
+        )
+        .map_err(Error::tool)?
+    } else {
+        Vec::new()
+    };
+
+    Ok(BuildResult {
+        binaries,
+        tests,
+        docs,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -40,6 +40,7 @@ Linux, or Windows 10 and 11 x64 with rustc 1.85 or newer, `curl`, and `tar`. Usi
     rusted new <PATH>
     rusted init [PATH]
     rusted build
+    rusted doc
     rusted check
     rusted run
     rusted test

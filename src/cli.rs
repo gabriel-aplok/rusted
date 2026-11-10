@@ -26,6 +26,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("add", "Add a dependency"),
     ("remove", "Remove a dependency"),
     ("build", "Compile the workspace"),
+    ("doc", "Build documentation for the workspace"),
     ("check", "Typecheck the workspace"),
     ("run", "Build and run a binary"),
     ("test", "Build and run tests"),
@@ -66,6 +67,7 @@ impl From<build::Error> for Failure {
 enum CommandKind {
     Build,
     Check,
+    Doc,
     Run,
     Test,
     Clean,
@@ -80,7 +82,11 @@ impl CommandKind {
     fn build_like(self) -> bool {
         matches!(
             self,
-            CommandKind::Build | CommandKind::Check | CommandKind::Run | CommandKind::Test
+            CommandKind::Build
+                | CommandKind::Check
+                | CommandKind::Doc
+                | CommandKind::Run
+                | CommandKind::Test
         )
     }
 }
@@ -89,6 +95,10 @@ impl CommandKind {
 struct Options {
     manifest_path: Option<PathBuf>,
     target_dir: Option<PathBuf>,
+    open: bool,
+    document_private_items: bool,
+    pass_through: Vec<String>,
+    document: bool,
     packages: Vec<String>,
     workspace: bool,
     release: bool,
@@ -159,6 +169,7 @@ where
             Ok(0)
         }
         "build" => command(CommandKind::Build, args),
+        "doc" => command(CommandKind::Doc, args),
         "check" => command(CommandKind::Check, args),
         "run" => command(CommandKind::Run, args),
         "test" => command(CommandKind::Test, args),
@@ -194,9 +205,8 @@ where
         CommandKind::Update => update(&options),
         CommandKind::Tree => tree(&options),
         CommandKind::Metadata => metadata(&options),
-        CommandKind::Build | CommandKind::Check | CommandKind::Run | CommandKind::Test => {
-            build_command(kind, &options)
-        }
+        CommandKind::Build | CommandKind::Check | CommandKind::Doc | CommandKind::Run
+        | CommandKind::Test => build_command(kind, &options),
     }
 }
 
@@ -220,7 +230,7 @@ fn build_command(kind: CommandKind, options: &Options) -> Result<i32, Failure> {
 
     let mode = match kind {
         CommandKind::Check => Mode::Check,
-        CommandKind::Build | CommandKind::Run => Mode::Build,
+        CommandKind::Build | CommandKind::Doc | CommandKind::Run => Mode::Build,
         CommandKind::Test => Mode::Test,
         _ => unreachable!(),
     };
@@ -242,9 +252,13 @@ fn build_command(kind: CommandKind, options: &Options) -> Result<i32, Failure> {
         locked: options.locked || options.frozen,
         target_dir: options.target_dir.as_deref(),
         profiles: &workspace.profiles,
+        document: kind == CommandKind::Doc,
     };
     let result = build::run(&workspace, &config, &build_options).map_err(Failure::from)?;
 
+    if options.document {
+        return run_docs(&workspace, &config, &result, options);
+    }
     if kind == CommandKind::Test {
         return run_tests(&result, options);
     }
@@ -266,6 +280,25 @@ fn build_command(kind: CommandKind, options: &Options) -> Result<i32, Failure> {
             ))
         })?;
     Ok(status.code().unwrap_or(1))
+}
+
+fn run_docs(
+    workspace: &Workspace,
+    config: &Config,
+    result: &build::BuildResult,
+    options: &Options,
+) -> Result<i32, Failure> {
+    let target_root = build::resolve_target_root(workspace, config, options.target_dir.as_deref())
+        .map_err(Failure::from)?;
+    build::doc::generate(
+        &result.docs,
+        &target_root,
+        options.open,
+        options.document_private_items,
+        &options.pass_through,
+    )
+    .map_err(Failure::tool)?;
+    Ok(0)
 }
 
 fn run_tests(result: &build::BuildResult, options: &Options) -> Result<i32, Failure> {
@@ -727,7 +760,10 @@ fn parse_options<I>(kind: CommandKind, args: I) -> Result<Options, Failure>
 where
     I: IntoIterator<Item = OsString>,
 {
-    let mut options = Options::default();
+    let mut options = Options {
+        document: kind == CommandKind::Doc,
+        ..Options::default()
+    };
     let mut expanded: Vec<OsString> = Vec::new();
     let mut after_separator = false;
     for argument in args {
@@ -762,6 +798,12 @@ where
             }
             "--" if kind == CommandKind::Test => {
                 options.test_args.extend(args);
+                break;
+            }
+            "--" if kind == CommandKind::Doc => {
+                options.pass_through.extend(
+                    args.map(|argument| argument.to_string_lossy().into_owned()),
+                );
                 break;
             }
             "-p" | "--package"
@@ -817,6 +859,10 @@ where
                 options.bin = Some(next_value(&mut args, &text)?);
             }
             "--no-run" if kind == CommandKind::Test => options.no_run = true,
+            "--open" if kind == CommandKind::Doc => options.open = true,
+            "--document-private-items" if kind == CommandKind::Doc => {
+                options.document_private_items = true;
+            }
             "--test-threads" if kind == CommandKind::Test => {
                 let value = next_value(&mut args, &text)?;
                 options.test_threads = Some(parse_test_threads(&value)?);
@@ -943,6 +989,7 @@ fn command_name(kind: CommandKind) -> &'static str {
     match kind {
         CommandKind::Build => "build",
         CommandKind::Check => "check",
+        CommandKind::Doc => "doc",
         CommandKind::Run => "run",
         CommandKind::Test => "test",
         CommandKind::Clean => "clean",
@@ -1230,6 +1277,7 @@ fn print_command_help(kind: CommandKind) {
     let usage = match kind {
         CommandKind::Run => format!("Usage: rusted {name} [OPTIONS] [-- <ARGS>...]"),
         CommandKind::Test => format!("Usage: rusted {name} [OPTIONS] [TESTNAME] [-- <ARGS>...]"),
+        CommandKind::Doc => format!("Usage: rusted {name} [OPTIONS] [-- <ARGS>...]"),
         CommandKind::Add | CommandKind::Remove => {
             format!("Usage: rusted {name} <NAME> [OPTIONS]")
         }
@@ -1274,6 +1322,11 @@ fn print_command_help(kind: CommandKind) {
         println!("      --dev                  Add to dev-dependencies");
         println!("      --build                Add to build-dependencies");
     }
+    if kind == CommandKind::Doc {
+        println!("      --open                 Open the documentation in a browser");
+        println!("      --document-private-items  Include private items in the docs");
+        println!("      ARGS after `--`        Passed through to rustdoc");
+    }
     if kind == CommandKind::Clean {
         println!("      --project              Remove the project target directory (default)");
         println!("      --store                Remove cached artifacts and build scripts");
@@ -1292,6 +1345,7 @@ fn print_command_help(kind: CommandKind) {
 fn command_about(kind: CommandKind) -> &'static str {
     match kind {
         CommandKind::Build => "Compile the workspace",
+        CommandKind::Doc => "Build documentation for the workspace",
         CommandKind::Check => "Typecheck the workspace",
         CommandKind::Run => "Build and run a binary",
         CommandKind::Test => "Build and run tests",
@@ -1344,6 +1398,24 @@ mod tests {
         assert_eq!(options.jobs, Some(4));
         assert_eq!(options.packages, vec!["app"]);
         assert!(!options.workspace);
+    }
+
+    #[test]
+    fn parses_doc_options() {
+        let options = parse_options(
+            CommandKind::Doc,
+            args(&["--open", "--document-private-items", "--", "-C", "panic=abort"]),
+        )
+        .unwrap();
+        assert!(options.open);
+        assert!(options.document_private_items);
+        assert!(options.document);
+        assert_eq!(
+            options.pass_through,
+            vec!["-C".to_string(), "panic=abort".to_string()]
+        );
+        let error = parse_options(CommandKind::Build, args(&["--open"])).unwrap_err();
+        assert!(error.message.contains("unexpected option `--open`"));
     }
 
     #[test]

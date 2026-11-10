@@ -34,7 +34,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: Use static musl linking
         if: matrix.target == 'aarch64-unknown-linux-musl'
-        run: echo "RUSTFLAGS=-C linker=rust-lld -C link-self-contained=yes" >> "$GITHUB_ENV"
+        run: echo "RUSTFLAGS=-C linker=rust-lld -C linker-flavor=ld.lld -C link-self-contained=yes" >> "$GITHUB_ENV"
       - name: Build
         shell: bash
         run: |

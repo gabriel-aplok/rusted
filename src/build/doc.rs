@@ -59,6 +59,10 @@ pub(crate) fn rustdoc_arguments(
         "--crate-name".to_string(),
         target.crate_name.clone(),
     ];
+    if let Some(triple) = &target.target {
+        arguments.push("--target".to_string());
+        arguments.push(triple.clone());
+    }
     for directory in &target.search_dirs {
         arguments.push("-L".to_string());
         arguments.push(format!("dependency={}", directory.display()));
@@ -88,11 +92,12 @@ pub(crate) fn rustdoc_arguments(
 pub(crate) fn generate(
     docs: &[super::DocTarget],
     target_root: &Path,
+    target: Option<&str>,
     open: bool,
     document_private_items: bool,
     pass_through: &[String],
 ) -> Result<(), String> {
-    let doc_dir = target_root.join(DOT_DOC);
+    let doc_dir = super::platform_dir(target_root, target).join(DOT_DOC);
     std::fs::create_dir_all(&doc_dir).map_err(|error| format!("{}: {error}", doc_dir.display()))?;
     let program = rustdoc_program();
     for target in docs {
@@ -147,6 +152,7 @@ pub(super) fn collect_doc_targets(
     roots: &[PackageId],
     artifacts: &[Option<Artifact>],
     search_dirs: &std::collections::BTreeSet<PathBuf>,
+    target: Option<&str>,
 ) -> Result<Vec<super::DocTarget>, String> {
     let root_set: std::collections::BTreeSet<&PackageId> = roots.iter().collect();
     let lib_indices = super::lib_units(plan);
@@ -162,28 +168,31 @@ pub(super) fn collect_doc_targets(
         if !root_set.contains(&unit.package) {
             continue;
         }
-        let package = packages
-            .get(&unit.package)
-            .ok_or_else(|| {
-                format!("missing package `{}` in the resolved graph", unit.package.name)
-            })?;
+        let package = packages.get(&unit.package).ok_or_else(|| {
+            format!(
+                "missing package `{}` in the resolved graph",
+                unit.package.name
+            )
+        })?;
         let mut externs = Vec::new();
-        for (name, dependency) in &unit.externs {
-            let dependency_index = *lib_indices.get(dependency).ok_or_else(|| {
-                format!(
-                    "internal error: dependency `{name}` of `{}` has no library unit",
-                    unit.package_name
-                )
-            })?;
+        for entry in &unit.externs {
+            let dependency_index = *lib_indices
+                .get(&(entry.package.clone(), entry.host))
+                .ok_or_else(|| {
+                    format!(
+                        "internal error: dependency `{}` of `{}` has no library unit",
+                        entry.name, unit.package_name
+                    )
+                })?;
             let artifact = artifacts[dependency_index].as_ref().ok_or_else(|| {
                 format!(
-                    "internal error: dependency `{name}` of `{}` is not built",
-                    unit.package_name
+                    "internal error: dependency `{}` of `{}` is not built",
+                    entry.name, unit.package_name
                 )
             })?;
             let dependency_unit = &plan.units[dependency_index];
             externs.push((
-                name.clone(),
+                entry.name.clone(),
                 artifact.dir.join(&dependency_unit.output_name),
             ));
         }
@@ -209,6 +218,11 @@ pub(super) fn collect_doc_targets(
             env,
             out_dir,
             proc_macro_crate: unit.kind == UnitKind::ProcMacro,
+            target: if unit.host {
+                None
+            } else {
+                target.map(str::to_string)
+            },
         });
     }
     Ok(targets)
@@ -313,6 +327,7 @@ mod tests {
             env: Vec::new(),
             out_dir: PathBuf::new(),
             proc_macro_crate: proc_macro,
+            target: None,
         }
     }
 
@@ -354,6 +369,62 @@ mod tests {
         let target = sample_target(true);
         let arguments = rustdoc_arguments(&target, Path::new("/target/doc"), false, &[]);
         assert!(contains_pair(&arguments, "--extern", "proc_macro"));
+    }
+
+    #[test]
+    fn target_units_pass_the_triple_to_rustdoc() {
+        let mut target = sample_target(false);
+        target.target = Some("aarch64-unknown-linux-gnu".to_string());
+        let arguments = rustdoc_arguments(&target, Path::new("/target/doc"), false, &[]);
+        assert!(contains_pair(
+            &arguments,
+            "--target",
+            "aarch64-unknown-linux-gnu"
+        ));
+
+        let mut host = sample_target(false);
+        host.target = None;
+        let arguments = rustdoc_arguments(&host, Path::new("/target/doc"), false, &[]);
+        assert!(!arguments.contains(&"--target".to_string()));
+    }
+
+    #[test]
+    fn doc_output_lands_under_the_triple_dir_when_targeting() {
+        if !rustdoc_or_skip() {
+            return;
+        }
+        let identity = crate::build::fingerprint::rustc_identity().unwrap();
+        let fixture = Fixture::new("target-dir");
+        let target_root = fixture.dir.join("target");
+        fixture.write(
+            "demo/src/lib.rs",
+            "/// Demo.\npub fn value() -> u32 {\n    7\n}\n",
+        );
+        let target = DocTarget {
+            crate_name: "demo".to_string(),
+            source: fixture.dir.join("demo/src/lib.rs"),
+            edition: Edition::E2021,
+            externs: Vec::new(),
+            search_dirs: Vec::new(),
+            cfgs: Vec::new(),
+            env: Vec::new(),
+            out_dir: PathBuf::new(),
+            proc_macro_crate: false,
+            target: None,
+        };
+        generate(
+            &[target],
+            &target_root,
+            Some(identity.host()),
+            false,
+            false,
+            &[],
+        )
+        .unwrap();
+        assert!(target_root
+            .join(identity.host())
+            .join("doc/demo/index.html")
+            .is_file());
     }
 
     #[test]
@@ -431,6 +502,7 @@ mod tests {
             env: Vec::new(),
             out_dir: PathBuf::new(),
             proc_macro_crate: false,
+            target: None,
         };
         let demo = DocTarget {
             crate_name: "demo".to_string(),
@@ -442,8 +514,9 @@ mod tests {
             env: Vec::new(),
             out_dir: PathBuf::new(),
             proc_macro_crate: false,
+            target: None,
         };
-        generate(&[helpers, demo], &target_root, false, false, &[]).unwrap();
+        generate(&[helpers, demo], &target_root, None, false, false, &[]).unwrap();
         assert!(target_root.join("doc/demo/index.html").is_file());
         assert!(target_root.join("doc/helpers/index.html").is_file());
     }
@@ -466,8 +539,9 @@ mod tests {
             env: Vec::new(),
             out_dir: PathBuf::new(),
             proc_macro_crate: false,
+            target: None,
         };
-        let error = generate(&[target], &target_root, false, false, &[]).unwrap_err();
+        let error = generate(&[target], &target_root, None, false, false, &[]).unwrap_err();
         assert!(error.contains("rustdoc for `broken` failed"), "{error}");
     }
 

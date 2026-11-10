@@ -290,6 +290,7 @@ pub(crate) fn artifact_key(
     source: &[u8; 32],
     build_script: Option<&str>,
     dependencies: &[(String, String)],
+    target: Option<&str>,
     salt: Option<&str>,
 ) -> String {
     let mut hasher = Sha256::new();
@@ -303,7 +304,10 @@ pub(crate) fn artifact_key(
         match unit.kind {
             UnitKind::BuildScript => "build-script",
             UnitKind::ProcMacro => "proc-macro",
-            UnitKind::Lib | UnitKind::Bin | UnitKind::Test | UnitKind::Example
+            UnitKind::Lib
+            | UnitKind::Bin
+            | UnitKind::Test
+            | UnitKind::Example
             | UnitKind::Bench => match mode {
                 Mode::Build => "build",
                 Mode::Check => "check",
@@ -329,6 +333,7 @@ pub(crate) fn artifact_key(
     field(&mut hasher, &unit.target_name);
     field(&mut hasher, unit.edition.as_str());
     field(&mut hasher, &flags.cache_key_material());
+    field(&mut hasher, &unit_platform(unit, target));
     field(
         &mut hasher,
         if unit.cap_lints {
@@ -362,6 +367,14 @@ fn salt_key_component(salt: Option<&str>) -> String {
     match salt {
         Some(name) => format!("salt={name}"),
         None => "salt=none".to_string(),
+    }
+}
+
+// keeps host and target compilations of one crate on distinct artifact keys
+fn unit_platform(unit: &Unit, target: Option<&str>) -> String {
+    match (target, unit.host) {
+        (Some(triple), false) => format!("target={triple}"),
+        _ => "target=host".to_string(),
     }
 }
 
@@ -404,6 +417,7 @@ mod key_tests {
             externs: Vec::new(),
             features: Vec::new(),
             cap_lints: false,
+            host: false,
         }
     }
 
@@ -429,6 +443,7 @@ mod key_tests {
             None,
             &[],
             None,
+            None,
         );
 
         assert_eq!(
@@ -441,6 +456,7 @@ mod key_tests {
                 &source,
                 None,
                 &[],
+                None,
                 None
             )
         );
@@ -454,6 +470,7 @@ mod key_tests {
                 &source,
                 None,
                 &[],
+                None,
                 None
             )
         );
@@ -467,6 +484,7 @@ mod key_tests {
                 &source,
                 None,
                 &[],
+                None,
                 None
             )
         );
@@ -480,6 +498,7 @@ mod key_tests {
                 &[8u8; 32],
                 None,
                 &[],
+                None,
                 None
             )
         );
@@ -493,6 +512,7 @@ mod key_tests {
                 &source,
                 None,
                 &[("dep".to_string(), "key".to_string())],
+                None,
                 None
             )
         );
@@ -509,6 +529,7 @@ mod key_tests {
                 &source,
                 None,
                 &[],
+                None,
                 None
             )
         );
@@ -528,6 +549,7 @@ mod key_tests {
             None,
             &[],
             None,
+            None,
         );
         let salted = artifact_key(
             &unit,
@@ -537,6 +559,7 @@ mod key_tests {
             &source,
             None,
             &[],
+            None,
             Some(crate::build::CLIPPY_ARTIFACT_SALT),
         );
         assert_ne!(base, salted);
@@ -550,7 +573,66 @@ mod key_tests {
                 &source,
                 None,
                 &[],
+                None,
                 Some("other")
+            )
+        );
+    }
+
+    #[test]
+    fn artifact_key_separates_host_and_target_compilations() {
+        let mut host = unit();
+        host.host = true;
+        let target = unit();
+        let flags = Flags::for_test();
+        let source = [7u8; 32];
+        let triple = Some("aarch64-unknown-linux-gnu");
+        assert_ne!(
+            artifact_key(
+                &host,
+                &flags,
+                &identity("a"),
+                Mode::Build,
+                &source,
+                None,
+                &[],
+                triple,
+                None
+            ),
+            artifact_key(
+                &target,
+                &flags,
+                &identity("a"),
+                Mode::Build,
+                &source,
+                None,
+                &[],
+                triple,
+                None
+            )
+        );
+        assert_eq!(
+            artifact_key(
+                &host,
+                &flags,
+                &identity("a"),
+                Mode::Build,
+                &source,
+                None,
+                &[],
+                None,
+                None
+            ),
+            artifact_key(
+                &target,
+                &flags,
+                &identity("a"),
+                Mode::Build,
+                &source,
+                None,
+                &[],
+                None,
+                None
             )
         );
     }

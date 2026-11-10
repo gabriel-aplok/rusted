@@ -65,6 +65,7 @@ pub(crate) fn run(
     source_hash: &[u8; 32],
     flags: &Flags,
     cfg: &Cfg,
+    host_triple: &str,
     profile: &str,
     jobs: usize,
     store: &Store,
@@ -78,6 +79,7 @@ pub(crate) fn run(
         source_hash,
         flags,
         cfg,
+        host_triple,
         profile,
         &dependency_hash,
     );
@@ -108,7 +110,15 @@ pub(crate) fn run(
     fs::create_dir_all(&out_dir).map_err(|error| format!("{}: {error}", out_dir.display()))?;
 
     let environment = environment(
-        package, flags, cfg, profile, jobs, &out_dir, packages, outputs,
+        package,
+        flags,
+        cfg,
+        host_triple,
+        profile,
+        jobs,
+        &out_dir,
+        packages,
+        outputs,
     );
     let output = Command::new(binary)
         .current_dir(&package.dir)
@@ -155,6 +165,7 @@ fn base_key(
     source_hash: &[u8; 32],
     flags: &Flags,
     cfg: &Cfg,
+    host_triple: &str,
     profile: &str,
     dependency_hash: &str,
 ) -> String {
@@ -168,6 +179,7 @@ fn base_key(
     }
     field(&mut hasher, &flags.cache_key_material());
     field(&mut hasher, cfg.target());
+    field(&mut hasher, host_triple);
     field(&mut hasher, profile);
     field(&mut hasher, &to_hex(source_hash));
     field(&mut hasher, dependency_hash);
@@ -204,6 +216,7 @@ fn environment(
     package: &PackageInfo,
     flags: &Flags,
     cfg: &Cfg,
+    host_triple: &str,
     profile: &str,
     jobs: usize,
     out_dir: &Path,
@@ -280,7 +293,7 @@ fn environment(
         ));
     }
 
-    environment.push(("HOST".to_string(), cfg.target().to_string()));
+    environment.push(("HOST".to_string(), host_triple.to_string()));
     environment.push(("TARGET".to_string(), cfg.target().to_string()));
     environment.push((
         "PROFILE".to_string(),

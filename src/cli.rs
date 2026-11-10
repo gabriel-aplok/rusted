@@ -3,8 +3,8 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::build::{self, BinaryArtifact, BinaryKind, MessageFormat, Mode};
 use crate::build::plan::{TargetList, TargetSelection};
+use crate::build::{self, BinaryArtifact, BinaryKind, MessageFormat, Mode};
 use crate::cache;
 use crate::config::{cache_root, Config, MAX_PARALLELISM};
 use crate::manifest::edit::{add_dependency, remove_dependency};
@@ -112,6 +112,7 @@ impl CommandKind {
 struct Options {
     manifest_path: Option<PathBuf>,
     target_dir: Option<PathBuf>,
+    target: Option<String>,
     open: bool,
     document_private_items: bool,
     pass_through: Vec<String>,
@@ -229,8 +230,12 @@ where
         CommandKind::Update => update(&options),
         CommandKind::Tree => tree(&options),
         CommandKind::Metadata => metadata(&options),
-        CommandKind::Build | CommandKind::Check | CommandKind::Clippy | CommandKind::Doc
-        | CommandKind::Run | CommandKind::Test => build_command(kind, &options),
+        CommandKind::Build
+        | CommandKind::Check
+        | CommandKind::Clippy
+        | CommandKind::Doc
+        | CommandKind::Run
+        | CommandKind::Test => build_command(kind, &options),
         CommandKind::Fmt => fmt_command(&options),
     }
 }
@@ -240,6 +245,17 @@ fn build_command(kind: CommandKind, options: &Options) -> Result<i32, Failure> {
         return Err(Failure::tool(
             "`--release` and `--profile` cannot be used together",
         ));
+    }
+    if matches!(kind, CommandKind::Run | CommandKind::Test) {
+        if let Some(target) = &options.target {
+            let host = build::fingerprint::rustc_identity()
+                .map_err(Failure::tool)?
+                .host()
+                .to_string();
+            if let Some(message) = cross_run_error(target, &host) {
+                return Err(Failure::tool(message));
+            }
+        }
     }
     let profile = options
         .profile
@@ -289,6 +305,7 @@ fn build_command(kind: CommandKind, options: &Options) -> Result<i32, Failure> {
         no_default_features: options.no_default_features,
         locked: options.locked || options.frozen,
         target_dir: options.target_dir.as_deref(),
+        target: options.target.as_deref(),
         profiles: &workspace.profiles,
         document: kind == CommandKind::Doc,
         rustc_program: clippy_program,
@@ -331,6 +348,11 @@ fn build_command(kind: CommandKind, options: &Options) -> Result<i32, Failure> {
     Ok(status.code().unwrap_or(1))
 }
 
+fn cross_run_error(target: &str, host: &str) -> Option<String> {
+    (target != host)
+        .then(|| format!("cannot run binaries built for `{target}` on the host `{host}`"))
+}
+
 fn run_docs(
     workspace: &Workspace,
     config: &Config,
@@ -342,6 +364,7 @@ fn run_docs(
     build::doc::generate(
         &result.docs,
         &target_root,
+        options.target.as_deref(),
         options.open,
         options.document_private_items,
         &options.pass_through,
@@ -353,8 +376,13 @@ fn run_docs(
 fn fmt_command(options: &Options) -> Result<i32, Failure> {
     let (_, _, workspace) = load_workspace(options)?;
     let targets = select_targets(&workspace, options)?;
-    build::fmt::format(&workspace, &targets, &options.pass_through, options.check_only)
-        .map_err(Failure::tool)?;
+    build::fmt::format(
+        &workspace,
+        &targets,
+        &options.pass_through,
+        options.check_only,
+    )
+    .map_err(Failure::tool)?;
     Ok(0)
 }
 
@@ -695,7 +723,7 @@ fn resolve_workspace(
     }
 
     let cache_root = cache_root(config).map_err(Failure::tool)?;
-    let cfg = Cfg::cached(&cache_root.join("v1").join("cfg-cache")).map_err(Failure::tool)?;
+    let cfg = Cfg::cached(&cache_root.join("v1").join("cfg-cache"), None).map_err(Failure::tool)?;
     let mut index = IndexClient::new(config).map_err(Failure::tool)?;
     let git_context = resolve::GitContext::new(cache_root.join("v1").join("git"), config.offline);
     let options = RootOptions {
@@ -766,10 +794,14 @@ fn run_selection(kind: CommandKind, options: &Options) -> Result<TargetSelection
             ));
         }
         if options.bin.is_some() && !options.example.is_empty() {
-            return Err(Failure::tool("`--bin` and `--example` cannot be used together"));
+            return Err(Failure::tool(
+                "`--bin` and `--example` cannot be used together",
+            ));
         }
         if options.bin.is_some() && !options.bench.is_empty() {
-            return Err(Failure::tool("`--bin` and `--bench` cannot be used together"));
+            return Err(Failure::tool(
+                "`--bin` and `--bench` cannot be used together",
+            ));
         }
         if options.example.len() + options.bench.len() > 1 {
             return Err(Failure::tool(
@@ -934,9 +966,9 @@ where
                 || kind == CommandKind::Clippy
                 || kind == CommandKind::Fmt =>
             {
-                options.pass_through.extend(
-                    args.map(|argument| argument.to_string_lossy().into_owned()),
-                );
+                options
+                    .pass_through
+                    .extend(args.map(|argument| argument.to_string_lossy().into_owned()));
                 break;
             }
             "-p" | "--package"
@@ -985,6 +1017,9 @@ where
             }
             "--target-dir" => {
                 options.target_dir = Some(PathBuf::from(next_value(&mut args, &text)?));
+            }
+            "--target" if build_like => {
+                options.target = Some(next_value(&mut args, &text)?);
             }
             "-q" | "--quiet" => options.quiet = true,
             "-v" | "--verbose" => options.verbose = true,
@@ -1502,6 +1537,7 @@ fn print_command_help(kind: CommandKind) {
     println!("      --offline              Never access the network");
     println!("      --manifest-path <PATH> Use this manifest");
     println!("      --target-dir <PATH>    Directory for build artifacts");
+    println!("      --target <TRIPLE>      Build for the target triple");
     println!("  -q, --quiet                Suppress progress output");
     println!("  -v, --verbose              Print rustc commands");
     println!("  -h, --help                 Print help");
@@ -1529,7 +1565,7 @@ fn command_about(kind: CommandKind) -> &'static str {
 mod tests {
     use std::ffi::OsString;
 
-    use super::{parse_options, run_selection, CommandKind, COMMANDS, TargetList, VERSION};
+    use super::{parse_options, run_selection, CommandKind, TargetList, COMMANDS, VERSION};
     use crate::build::MessageFormat;
 
     fn args(values: &[&str]) -> impl Iterator<Item = OsString> {
@@ -1571,7 +1607,13 @@ mod tests {
     fn parses_doc_options() {
         let options = parse_options(
             CommandKind::Doc,
-            args(&["--open", "--document-private-items", "--", "-C", "panic=abort"]),
+            args(&[
+                "--open",
+                "--document-private-items",
+                "--",
+                "-C",
+                "panic=abort",
+            ]),
         )
         .unwrap();
         assert!(options.open);
@@ -1672,6 +1714,68 @@ mod tests {
     fn parses_offline() {
         let options = parse_options(CommandKind::Build, args(&["--offline"])).unwrap();
         assert!(options.offline);
+    }
+
+    #[test]
+    fn parses_build_target() {
+        let options = parse_options(
+            CommandKind::Build,
+            args(&["--target", "aarch64-unknown-linux-gnu"]),
+        )
+        .unwrap();
+        assert_eq!(options.target.as_deref(), Some("aarch64-unknown-linux-gnu"));
+
+        let options = parse_options(
+            CommandKind::Build,
+            args(&["--target=x86_64-pc-windows-msvc"]),
+        )
+        .unwrap();
+        assert_eq!(options.target.as_deref(), Some("x86_64-pc-windows-msvc"));
+
+        for kind in [
+            CommandKind::Build,
+            CommandKind::Check,
+            CommandKind::Clippy,
+            CommandKind::Doc,
+            CommandKind::Run,
+            CommandKind::Test,
+        ] {
+            let options = parse_options(kind, args(&["--target", "x"])).unwrap();
+            assert_eq!(options.target.as_deref(), Some("x"));
+        }
+
+        for kind in [
+            CommandKind::Fmt,
+            CommandKind::Clean,
+            CommandKind::Add,
+            CommandKind::Remove,
+            CommandKind::Update,
+            CommandKind::Tree,
+            CommandKind::Metadata,
+        ] {
+            let error = parse_options(kind, args(&["--target", "x"])).unwrap_err();
+            assert!(error.message.contains("unexpected option `--target`"));
+        }
+
+        let error = parse_options(CommandKind::Build, args(&["--target", ""])).unwrap_err();
+        assert!(error.message.contains("`--target` requires a value"));
+    }
+
+    #[test]
+    fn cross_run_refusal_names_both_triples() {
+        use super::cross_run_error;
+
+        assert!(cross_run_error("x86_64-unknown-linux-gnu", "x86_64-unknown-linux-gnu").is_none());
+        let error =
+            cross_run_error("aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu").unwrap();
+        assert!(
+            error.contains("cannot run binaries built for `aarch64-unknown-linux-gnu`"),
+            "{error:?}"
+        );
+        assert!(
+            error.contains("on the host `x86_64-unknown-linux-gnu`"),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -1785,7 +1889,16 @@ mod tests {
 
         let options = parse_options(
             CommandKind::Test,
-            args(&["--example", "x", "--example", "x", "--bench", "y", "--bench", "y"]),
+            args(&[
+                "--example",
+                "x",
+                "--example",
+                "x",
+                "--bench",
+                "y",
+                "--bench",
+                "y",
+            ]),
         )
         .unwrap();
         assert_eq!(options.example, vec!["x", "x"]);
@@ -1801,8 +1914,7 @@ mod tests {
     #[test]
     fn target_selection_from_run_options() {
         let options =
-            parse_options(CommandKind::Run, args(&["--example", "x", "--bench", "y"]))
-                .unwrap();
+            parse_options(CommandKind::Run, args(&["--example", "x", "--bench", "y"])).unwrap();
         let error = run_selection(CommandKind::Run, &options).unwrap_err();
         assert!(error.message.contains("cannot be used together"));
 

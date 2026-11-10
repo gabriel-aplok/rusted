@@ -40,6 +40,44 @@ pub(crate) enum Mode {
 }
 
 const EXAMPLES_DIR: &str = "examples";
+const CFG_CACHE_DIR: &str = "cfg-cache";
+
+struct ProfileDirs {
+    host: PathBuf,
+    target: PathBuf,
+}
+
+impl ProfileDirs {
+    fn new(target_root: &Path, target: Option<&str>, profile: &str) -> Self {
+        Self {
+            host: profile_dir(target_root, target, true, profile),
+            target: profile_dir(target_root, target, false, profile),
+        }
+    }
+
+    fn for_unit(&self, unit: &Unit) -> &Path {
+        if unit.host {
+            &self.host
+        } else {
+            &self.target
+        }
+    }
+}
+
+fn platform_dir(target_root: &Path, target: Option<&str>) -> PathBuf {
+    match target {
+        Some(triple) => target_root.join(triple),
+        None => target_root.to_path_buf(),
+    }
+}
+
+fn profile_dir(target_root: &Path, target: Option<&str>, host: bool, profile: &str) -> PathBuf {
+    let base = match (target, host) {
+        (Some(triple), false) => target_root.join(triple),
+        _ => target_root.to_path_buf(),
+    };
+    base.join(profile_dir_name(profile))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MessageFormat {
@@ -104,6 +142,7 @@ pub(crate) struct DocTarget {
     pub(crate) env: Vec<(String, String)>,
     pub(crate) out_dir: PathBuf,
     pub(crate) proc_macro_crate: bool,
+    pub(crate) target: Option<String>,
 }
 
 pub(crate) struct TestArtifact {
@@ -116,6 +155,7 @@ pub(crate) struct Options<'a> {
     pub(crate) mode: Mode,
     pub(crate) selection: &'a TargetSelection,
     pub(crate) profile: &'a str,
+    pub(crate) target: Option<&'a str>,
     pub(crate) force: bool,
     pub(crate) incremental: bool,
     pub(crate) jobs: usize,
@@ -299,9 +339,11 @@ pub(crate) fn run(
     let target_root = resolve_target_root(workspace, config, options.target_dir)?;
     std::fs::create_dir_all(&target_root)
         .map_err(|error| Error::tool(format!("{}: {error}", target_root.display())))?;
-    let profile_dir = target_root.join(profile_dir_name(options.profile));
-    std::fs::create_dir_all(&profile_dir)
-        .map_err(|error| Error::tool(format!("{}: {error}", profile_dir.display())))?;
+    let profile_dirs = ProfileDirs::new(&target_root, options.target, options.profile);
+    std::fs::create_dir_all(&profile_dirs.host)
+        .map_err(|error| Error::tool(format!("{}: {error}", profile_dirs.host.display())))?;
+    std::fs::create_dir_all(&profile_dirs.target)
+        .map_err(|error| Error::tool(format!("{}: {error}", profile_dirs.target.display())))?;
 
     let store = Store::open(config).map_err(Error::tool)?;
     let hash_cache_path = store.root().join("hash-cache");
@@ -353,7 +395,8 @@ pub(crate) fn run(
         None
     };
 
-    let cfg = Cfg::cached(&store.root().join("cfg-cache")).map_err(Error::tool)?;
+    let cfg =
+        Cfg::cached(&store.root().join(CFG_CACHE_DIR), options.target).map_err(Error::tool)?;
     let mut index = IndexClient::new(config).map_err(Error::tool)?;
     let crate_store = CrateStore::new(config).map_err(Error::tool)?;
     let git_root = store.root().join("git");
@@ -531,8 +574,14 @@ pub(crate) fn run(
     }
 
     feature_split::apply(&mut packages, &root_ids);
-    let plan = plan::plan(&packages, &root_ids, options.mode, options.selection)
-        .map_err(Error::tool)?;
+    let plan = plan::plan(
+        &packages,
+        &root_ids,
+        options.mode,
+        options.selection,
+        options.target.is_some(),
+    )
+    .map_err(Error::tool)?;
     let build_script_units = build_script_units(&plan);
     let mut build_script_outputs: BTreeMap<PackageId, BuildScriptOutput> = BTreeMap::new();
     let excluded = [canonical(&target_root)?, canonical(store.root())?];
@@ -601,7 +650,7 @@ pub(crate) fn run(
                     &excluded,
                     &identity,
                     &store,
-                    &profile_dir,
+                    &profile_dirs,
                     &build_script_outputs,
                     &build_script_units,
                     remote.as_ref(),
@@ -638,9 +687,10 @@ pub(crate) fn run(
                             config,
                             options,
                             &cfg,
+                            &identity,
                             &source_hashes,
                             &store,
-                            &profile_dir,
+                            &profile_dirs,
                             &mut build_script_outputs,
                             &mut artifacts,
                             &mut search_dirs,
@@ -803,9 +853,10 @@ pub(crate) fn run(
                     config,
                     options,
                     &cfg,
+                    &identity,
                     &source_hashes,
                     &store,
-                    &profile_dir,
+                    &profile_dirs,
                     &mut build_script_outputs,
                     &mut artifacts,
                     &mut search_dirs,
@@ -918,6 +969,7 @@ pub(crate) fn run(
             &root_ids,
             &artifacts,
             &search_dirs,
+            options.target,
         )
         .map_err(Error::tool)?
     } else {
@@ -938,14 +990,14 @@ fn prepare(
     packages: &BTreeMap<PackageId, PackageInfo>,
     config: &Config,
     options: &Options<'_>,
-    lib_units: &BTreeMap<PackageId, usize>,
+    lib_units: &BTreeMap<(PackageId, bool), usize>,
     keys: &mut [Option<String>],
     paths: &[Option<PathBuf>],
     source_hashes: &mut HashMap<PackageId, [u8; 32]>,
     excluded: &[PathBuf],
     identity: &RustcIdentity,
     store: &Store,
-    profile_dir: &Path,
+    profile_dirs: &ProfileDirs,
     build_script_outputs: &BTreeMap<PackageId, BuildScriptOutput>,
     build_script_units: &BTreeMap<PackageId, usize>,
     remote: Option<&crate::remote::Remote>,
@@ -965,32 +1017,35 @@ fn prepare(
         options.incremental,
         &unit.package_name,
         unit.kind,
+        options.target,
     )
     .map_err(Error::tool)?;
 
     let mut externs = Vec::new();
     let mut dependency_keys = Vec::new();
-    for (name, dependency) in &unit.externs {
-        let dependency_index = *lib_units.get(dependency).ok_or_else(|| {
-            Error::tool(format!(
-                "internal error: dependency `{name}` of `{}` has no library unit",
-                unit.package_name
-            ))
-        })?;
+    for entry in &unit.externs {
+        let dependency_index = *lib_units
+            .get(&(entry.package.clone(), entry.host))
+            .ok_or_else(|| {
+                Error::tool(format!(
+                    "internal error: dependency `{}` of `{}` has no library unit",
+                    entry.name, unit.package_name
+                ))
+            })?;
         let path = paths[dependency_index].as_ref().ok_or_else(|| {
             Error::tool(format!(
-                "internal error: dependency `{name}` of `{}` is not built",
-                unit.package_name
+                "internal error: dependency `{}` of `{}` is not built",
+                entry.name, unit.package_name
             ))
         })?;
         let key = keys[dependency_index].as_ref().ok_or_else(|| {
             Error::tool(format!(
-                "internal error: dependency `{name}` of `{}` has no key",
-                unit.package_name
+                "internal error: dependency `{}` of `{}` has no key",
+                entry.name, unit.package_name
             ))
         })?;
-        externs.push((name.clone(), path.clone()));
-        dependency_keys.push((name.clone(), key.clone()));
+        externs.push((entry.name.clone(), path.clone()));
+        dependency_keys.push((entry.name.clone(), key.clone()));
     }
 
     let source = match source_hashes.get(&unit.package) {
@@ -1026,6 +1081,7 @@ fn prepare(
         &source,
         build_output.map(|output| output.key.as_str()),
         &dependency_keys,
+        options.target,
         options.artifact_salt.as_deref(),
     );
     keys[index] = Some(key.clone());
@@ -1056,7 +1112,7 @@ fn prepare(
     }
 
     let incremental_dir = if flags.incremental() {
-        Some(profile_dir.join("incremental"))
+        Some(profile_dirs.for_unit(unit).join("incremental"))
     } else {
         None
     };
@@ -1290,7 +1346,7 @@ fn complete(
     artifact: Artifact,
     plan: &plan::Plan,
     mode: Mode,
-    profile_dir: &Path,
+    profile_dirs: &ProfileDirs,
     store: &Store,
     artifacts: &mut [Option<Artifact>],
     search_dirs: &mut BTreeSet<PathBuf>,
@@ -1301,6 +1357,7 @@ fn complete(
     announced: &mut [bool],
 ) -> Result<(), Error> {
     let unit = &plan.units[index];
+    let profile_dir = profile_dirs.for_unit(unit);
 
     match (mode, unit.kind) {
         (Mode::Build, UnitKind::Bin) => {
@@ -1444,11 +1501,11 @@ fn parse_version_triple(text: &str) -> Option<(u64, u64, u64)> {
     Some((major, minor, patch))
 }
 
-fn lib_units(plan: &plan::Plan) -> BTreeMap<PackageId, usize> {
+fn lib_units(plan: &plan::Plan) -> BTreeMap<(PackageId, bool), usize> {
     let mut units = BTreeMap::new();
     for (index, unit) in plan.units.iter().enumerate() {
         if unit.kind == UnitKind::Lib || unit.kind == UnitKind::ProcMacro {
-            units.insert(unit.package.clone(), index);
+            units.insert((unit.package.clone(), unit.host), index);
         }
     }
     units
@@ -1466,19 +1523,21 @@ fn build_script_units(plan: &plan::Plan) -> BTreeMap<PackageId, usize> {
 
 fn dependency_graph(
     plan: &plan::Plan,
-    lib_units: &BTreeMap<PackageId, usize>,
+    lib_units: &BTreeMap<(PackageId, bool), usize>,
     build_script_units: &BTreeMap<PackageId, usize>,
     packages: &BTreeMap<PackageId, PackageInfo>,
 ) -> Result<(Vec<Vec<usize>>, Vec<Vec<usize>>), Error> {
     let mut dependencies = vec![Vec::new(); plan.units.len()];
     for (index, unit) in plan.units.iter().enumerate() {
-        for (name, dependency) in &unit.externs {
-            let dependency_index = *lib_units.get(dependency).ok_or_else(|| {
-                Error::tool(format!(
-                    "internal error: dependency `{name}` of `{}` has no library unit",
-                    unit.package_name
-                ))
-            })?;
+        for entry in &unit.externs {
+            let dependency_index = *lib_units
+                .get(&(entry.package.clone(), entry.host))
+                .ok_or_else(|| {
+                    Error::tool(format!(
+                        "internal error: dependency `{}` of `{}` has no library unit",
+                        entry.name, unit.package_name
+                    ))
+                })?;
             if !dependencies[index].contains(&dependency_index) {
                 dependencies[index].push(dependency_index);
             }
@@ -1527,9 +1586,10 @@ fn finish_unit(
     config: &Config,
     options: &Options<'_>,
     cfg: &Cfg,
+    identity: &RustcIdentity,
     source_hashes: &HashMap<PackageId, [u8; 32]>,
     store: &Store,
-    profile_dir: &Path,
+    profile_dirs: &ProfileDirs,
     build_script_outputs: &mut BTreeMap<PackageId, BuildScriptOutput>,
     artifacts: &mut [Option<Artifact>],
     search_dirs: &mut BTreeSet<PathBuf>,
@@ -1554,6 +1614,7 @@ fn finish_unit(
             options.incremental,
             &unit.package_name,
             unit.kind,
+            options.target,
         )
         .map_err(Error::tool)?;
         let source = source_hashes.get(&unit.package).copied().ok_or_else(|| {
@@ -1571,6 +1632,7 @@ fn finish_unit(
             &source,
             &flags,
             cfg,
+            identity.host(),
             options.profile,
             options.jobs,
             store,
@@ -1586,7 +1648,7 @@ fn finish_unit(
         artifact,
         plan,
         options.mode,
-        profile_dir,
+        profile_dirs,
         store,
         artifacts,
         search_dirs,
@@ -1783,6 +1845,46 @@ fn profile_dir_name(profile: &str) -> &str {
 fn canonical(path: &Path) -> Result<PathBuf, Error> {
     path.canonicalize()
         .map_err(|error| Error::tool(format!("{}: {error}", path.display())))
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::{platform_dir, profile_dir};
+
+    #[test]
+    fn target_layout_prefixes_the_triple_for_target_units() {
+        let root = std::path::Path::new("/target");
+        assert_eq!(
+            platform_dir(root, Some("aarch64-unknown-linux-gnu")),
+            std::path::PathBuf::from("/target/aarch64-unknown-linux-gnu")
+        );
+        assert_eq!(
+            platform_dir(root, None),
+            std::path::PathBuf::from("/target")
+        );
+    }
+
+    #[test]
+    fn profile_dirs_split_host_and_target_platforms() {
+        let root = std::path::Path::new("/target");
+        let triple = Some("aarch64-unknown-linux-gnu");
+        assert_eq!(
+            profile_dir(root, triple, false, "dev"),
+            std::path::PathBuf::from("/target/aarch64-unknown-linux-gnu/debug")
+        );
+        assert_eq!(
+            profile_dir(root, triple, true, "dev"),
+            std::path::PathBuf::from("/target/debug")
+        );
+        assert_eq!(
+            profile_dir(root, None, true, "release"),
+            std::path::PathBuf::from("/target/release")
+        );
+        assert_eq!(
+            profile_dir(root, None, false, "dev"),
+            std::path::PathBuf::from("/target/debug")
+        );
+    }
 }
 
 #[cfg(test)]

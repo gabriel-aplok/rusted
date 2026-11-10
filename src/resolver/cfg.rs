@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Clone, Debug, Default)]
@@ -8,6 +8,9 @@ pub(crate) struct Cfg {
     pairs: BTreeSet<(String, String)>,
     target: String,
 }
+
+const CFG_CACHE_ROOT_LABEL: &str = "host";
+const CFG_CACHE_FILE: &str = "cfg.txt";
 
 impl Cfg {
     #[cfg_attr(not(test), allow(dead_code))]
@@ -27,45 +30,52 @@ impl Cfg {
     pub(crate) fn host() -> Result<Self, String> {
         let identity = crate::build::fingerprint::rustc_identity()?;
         let target = identity.host().to_string();
-        let cfg_text = spawn_cfg()?;
+        let cfg_text = spawn_cfg(None)?;
         Self::parse_output(&cfg_text, &target)
     }
 
-    pub(crate) fn cached(cache_path: &Path) -> Result<Self, String> {
+    pub(crate) fn cached(cache_root: &Path, target: Option<&str>) -> Result<Self, String> {
         let identity = crate::build::fingerprint::rustc_identity()?;
-        let target = identity.host().to_string();
+        let platform = target.unwrap_or(identity.host());
+        let label = target.unwrap_or(CFG_CACHE_ROOT_LABEL);
         let key = format!(
             "key={}|{}|{}",
             identity.release(),
-            identity.host(),
+            platform,
             identity.commit()
         );
+        let cache_path = cache_file(cache_root, label);
 
-        if let Ok(text) = std::fs::read_to_string(cache_path) {
+        if let Ok(text) = std::fs::read_to_string(&cache_path) {
             let mut lines = text.lines();
             if lines.next() == Some(key.as_str()) {
                 let body = lines.collect::<Vec<_>>().join(
                     "
 ",
                 );
-                return Self::parse_output(&body, &target);
+                return Self::parse_output(&body, platform);
             }
         }
 
-        let cfg_text = spawn_cfg()?;
-        let cfg = Self::parse_output(&cfg_text, &target)?;
+        let cfg_text = spawn_cfg(target)?;
+        let cfg = Self::parse_output(&cfg_text, platform)?;
 
         let mut text = key;
         text.push('\n');
         text.push_str(&cfg_text);
         text.push('\n');
+        if cache_root.is_file() {
+            // pre-1.0 layout stored a single file where the cache directory now lives
+            std::fs::remove_file(cache_root)
+                .map_err(|error| format!("{}: {error}", cache_root.display()))?;
+        }
         let temp = cache_path.with_extension(format!("tmp.{}", std::process::id()));
         if let Some(parent) = cache_path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|error| format!("{}: {error}", parent.display()))?;
         }
         std::fs::write(&temp, &text)
-            .and_then(|_| std::fs::rename(&temp, cache_path))
+            .and_then(|_| std::fs::rename(&temp, &cache_path))
             .map_err(|error| format!("{}: {error}", cache_path.display()))?;
         Ok(cfg)
     }
@@ -149,15 +159,31 @@ impl Cfg {
     }
 }
 
-fn spawn_cfg() -> Result<String, String> {
+fn cache_file(cache_root: &Path, label: &str) -> PathBuf {
+    cache_root.join(label).join(CFG_CACHE_FILE)
+}
+
+fn spawn_cfg(target: Option<&str>) -> Result<String, String> {
     let rustc = crate::build::rustc_program();
-    let output = Command::new(&rustc)
-        .arg("--print")
-        .arg("cfg")
+    let mut command = Command::new(&rustc);
+    command.arg("--print").arg("cfg");
+    if let Some(triple) = target {
+        command.arg("--target").arg(triple);
+    }
+    let output = command
         .output()
         .map_err(|error| format!("failed to run rustc --print cfg: {error}"))?;
     if !output.status.success() {
-        return Err(format!("rustc --print cfg failed with {}", output.status));
+        let suggestion = match target {
+            Some(triple) => format!(
+                "; the target `{triple}` may not be installed, run `rustup target add {triple}`"
+            ),
+            None => String::new(),
+        };
+        return Err(format!(
+            "rustc --print cfg failed with {}{suggestion}",
+            output.status
+        ));
     }
     String::from_utf8(output.stdout)
         .map(|text| text.trim_end_matches('\n').to_string())
@@ -333,7 +359,9 @@ impl Parser<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::Cfg;
+    use std::path::{Path, PathBuf};
+
+    use super::{cache_file, Cfg};
 
     fn test_cfg() -> Cfg {
         Cfg::new(
@@ -411,5 +439,32 @@ mod tests {
     fn host_reports_a_target() {
         let cfg = Cfg::host().unwrap();
         assert!(cfg.target().contains('-'), "{}", cfg.target());
+    }
+
+    #[test]
+    fn cache_paths_separate_host_and_target_platforms() {
+        let root = Path::new("/cache");
+        assert_eq!(
+            cache_file(root, "host"),
+            PathBuf::from("/cache/host/cfg.txt")
+        );
+        assert_eq!(
+            cache_file(root, "aarch64-unknown-linux-gnu"),
+            PathBuf::from("/cache/aarch64-unknown-linux-gnu/cfg.txt")
+        );
+    }
+
+    #[test]
+    fn cached_with_the_host_triple_matches_the_host_cache() {
+        // rustc --print cfg --target <host> needs no extra target std install
+        let identity = crate::build::fingerprint::rustc_identity().unwrap();
+        let root = std::env::temp_dir().join(format!("rusted-cfg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+
+        let cfg = Cfg::cached(&root, Some(identity.host())).unwrap();
+
+        assert_eq!(cfg.target(), identity.host());
+        assert!(cache_file(&root, identity.host()).is_file());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

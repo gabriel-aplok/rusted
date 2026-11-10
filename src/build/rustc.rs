@@ -38,6 +38,7 @@ pub(crate) struct Flags {
     incremental: bool,
     linker_choice: Option<Linker>,
     linker: Option<String>,
+    target: Option<String>,
 }
 
 impl Flags {
@@ -67,12 +68,13 @@ impl Flags {
             incremental: false,
             linker_choice: None,
             linker: None,
+            target: None,
         }
     }
 
     pub(crate) fn cache_key_material(&self) -> String {
         format!(
-            "opt={};debug={};strip={:?};cgu={};debug-assertions={};overflow-checks={};lto={:?};panic={:?};incremental={};linker={:?}",
+            "opt={};debug={};strip={:?};cgu={};debug-assertions={};overflow-checks={};lto={:?};panic={:?};incremental={};linker={:?};target={}",
             self.opt_level,
             self.debug_info,
             self.strip,
@@ -82,7 +84,8 @@ impl Flags {
             self.lto,
             self.panic,
             self.incremental,
-            self.linker
+            self.linker,
+            self.target.as_deref().unwrap_or("host")
         )
     }
 
@@ -93,6 +96,7 @@ impl Flags {
         force_incremental: bool,
         package_name: &str,
         kind: UnitKind,
+        target: Option<&str>,
     ) -> Result<Self, String> {
         let release = profile_name == "release";
         let mut flags = if release {
@@ -108,6 +112,7 @@ impl Flags {
                 incremental: false,
                 linker_choice: None,
                 linker: None,
+                target: None,
             }
         } else {
             Self {
@@ -122,8 +127,10 @@ impl Flags {
                 incremental: false,
                 linker_choice: None,
                 linker: None,
+                target: None,
             }
         };
+        flags.target = target.map(str::to_string);
         flags.linker_choice = config.linker.clone();
         flags.incremental = profile_name == "dev";
 
@@ -310,6 +317,11 @@ pub(crate) fn compile(
         .arg(unit.edition.as_str())
         .arg("--crate-name")
         .arg(&unit.crate_name);
+    if let Some(target) = &flags.target {
+        if !unit.host {
+            command.arg("--target").arg(target);
+        }
+    }
     match unit.kind {
         UnitKind::Lib => {
             command.arg("--crate-type").arg("lib");
@@ -601,5 +613,16 @@ mod tests {
         let mut right = Flags::for_test();
         right.linker = Some("/usr/bin/mold".to_string());
         assert_ne!(left.cache_key_material(), right.cache_key_material());
+    }
+
+    #[test]
+    fn target_changes_the_cache_key() {
+        let left = Flags::for_test();
+        let mut right = Flags::for_test();
+        right.target = Some("aarch64-unknown-linux-gnu".to_string());
+        assert_ne!(left.cache_key_material(), right.cache_key_material());
+        assert!(right
+            .cache_key_material()
+            .ends_with("target=aarch64-unknown-linux-gnu"));
     }
 }

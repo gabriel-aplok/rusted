@@ -57,6 +57,7 @@ impl Directives {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run(
     unit: &Unit,
     package: &PackageInfo,
@@ -159,6 +160,7 @@ pub(crate) fn run(
     Ok(directives.into_output(&base, &inputs, out_dir))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn base_key(
     unit: &Unit,
     build_script_key: &str,

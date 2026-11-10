@@ -923,6 +923,14 @@ EOF
 fi
 
 if [ "$mode" = all ]; then
+    clear_log
+    clippy_output=$("$bin" clippy --target-dir "$it/clippy" 2>&1)
+    if [ -n "$(printf '%s' "$clippy_output" | grep -E '^(warning|error):')" ]; then
+        echo "`rusted clippy` dogfood must be clean:" >&2
+        printf '%s\n' "$clippy_output" >&2
+        exit 1
+    fi
+
     clean_cache=$PWD/target/selfhost-clean-cache
     rm -rf "$clean_cache"
     env -u RUSTED_CACHE_DIR -u RUSTED_RUSTC_LOG \

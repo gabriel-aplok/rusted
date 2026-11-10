@@ -96,7 +96,7 @@ pub(crate) fn apply(packages: &mut BTreeMap<PackageId, PackageInfo>, roots: &[Pa
         copy.features = host_features[host_id].clone();
         copy.dependencies = rewritten_deps(source, &pm_build_ids, &host_keys);
         insertions.push((host_id.clone(), copy));
-        if target_features.get(&origin).is_none() {
+        if !target_features.contains_key(&origin) {
             // The node was merged into a single entry by the resolver but the
             // target side never reaches it: it belongs to the host only.
             removals.push(origin);
@@ -151,9 +151,9 @@ fn rewritten_deps(
         .iter()
         .map(|edge| {
             let mut edge = edge.clone();
-            if pm_build_ids.contains(&edge.package) {
-                edge.package = with_context(&edge.package, BuildContext::Build);
-            } else if host_keys.contains(&with_context(&edge.package, BuildContext::Build)) {
+            if pm_build_ids.contains(&edge.package)
+                || host_keys.contains(&with_context(&edge.package, BuildContext::Build))
+            {
                 edge.package = with_context(&edge.package, BuildContext::Build);
             }
             edge

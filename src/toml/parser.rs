@@ -32,7 +32,7 @@ struct Parser<'a> {
     depth: usize,
 }
 
-impl<'a> Parser<'a> {
+impl Parser<'_> {
     fn parse_document(mut self) -> Result<Table, Error> {
         loop {
             self.skip_inline_whitespace();
@@ -884,7 +884,7 @@ fn parse_float(sign: i64, body: &str) -> Result<Value, &'static str> {
 }
 
 fn validate_float(text: &str) -> Result<(), &'static str> {
-    let exponent_index = text.find(|character: char| character == 'e' || character == 'E');
+    let exponent_index = text.find(['e', 'E']);
     let (mantissa, exponent) = match exponent_index {
         Some(index) => (&text[..index], Some(&text[index + 1..])),
         None => (text, None),

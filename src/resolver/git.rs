@@ -169,8 +169,7 @@ fn ls_remote_refs(output: &str) -> impl Iterator<Item = (&str, &str)> {
 }
 
 fn find_ref<'a>(output: &'a str, reference: &str) -> Option<&'a str> {
-    ls_remote_refs(output)
-        .find_map(|(sha, name)| (name == reference).then_some(sha))
+    ls_remote_refs(output).find_map(|(sha, name)| (name == reference).then_some(sha))
 }
 
 fn run_git(args: &[String], url: &str) -> Result<String, String> {
@@ -223,7 +222,12 @@ pub(crate) mod test_support {
 
         pub(crate) fn git(&self, args: &[&str]) -> String {
             let output = Command::new(GIT)
-                .args(["-c", "user.name=rusted", "-c", "user.email=rusted@example.com"])
+                .args([
+                    "-c",
+                    "user.name=rusted",
+                    "-c",
+                    "user.email=rusted@example.com",
+                ])
                 .args(args)
                 .current_dir(&self.dir)
                 .output()
@@ -309,8 +313,8 @@ mod tests {
 
     impl Fixture {
         fn new(name: &str) -> Self {
-            let dir =
-                std::env::temp_dir().join(format!("rusted-git-fixture-{}-{name}", std::process::id()));
+            let dir = std::env::temp_dir()
+                .join(format!("rusted-git-fixture-{}-{name}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             Self { dir }
@@ -342,12 +346,18 @@ mod tests {
         repo.write("Cargo.toml", "[package]\nname = \"foo\"\n");
         let head = repo.commit("init");
         repo.git(&["branch", "dev"]);
-        let sha = resolve_ref(&repo.url(), Some(&GitRefSelection::Branch("dev".to_string())))
-            .unwrap();
+        let sha = resolve_ref(
+            &repo.url(),
+            Some(&GitRefSelection::Branch("dev".to_string())),
+        )
+        .unwrap();
         assert_eq!(sha, head);
 
-        let error = resolve_ref(&repo.url(), Some(&GitRefSelection::Branch("missing".to_string())))
-            .unwrap_err();
+        let error = resolve_ref(
+            &repo.url(),
+            Some(&GitRefSelection::Branch("missing".to_string())),
+        )
+        .unwrap_err();
         assert!(error.contains(&repo.url()), "{error}");
     }
 
@@ -360,13 +370,13 @@ mod tests {
         repo.write("Cargo.toml", "[package]\nname = \"foo\"\n");
         let head = repo.commit("init");
         repo.tag("v1.0.0");
-        let tag_sha = repo
-            .git(&["rev-parse", "v1.0.0"])
-            .trim()
-            .to_string();
+        let tag_sha = repo.git(&["rev-parse", "v1.0.0"]).trim().to_string();
         assert_ne!(tag_sha, head);
-        let sha =
-            resolve_ref(&repo.url(), Some(&GitRefSelection::Tag("v1.0.0".to_string()))).unwrap();
+        let sha = resolve_ref(
+            &repo.url(),
+            Some(&GitRefSelection::Tag("v1.0.0".to_string())),
+        )
+        .unwrap();
         assert_eq!(sha, head);
     }
 
@@ -380,12 +390,18 @@ mod tests {
         let head = repo.commit("init");
         let full = resolve_ref(&repo.url(), Some(&GitRefSelection::Rev(head.clone()))).unwrap();
         assert_eq!(full, head);
-        let prefix =
-            resolve_ref(&repo.url(), Some(&GitRefSelection::Rev(head[..7].to_string()))).unwrap();
+        let prefix = resolve_ref(
+            &repo.url(),
+            Some(&GitRefSelection::Rev(head[..7].to_string())),
+        )
+        .unwrap();
         assert_eq!(prefix, head);
-        assert!(resolve_ref(&repo.url(), Some(&GitRefSelection::Rev("missing".to_string())))
-            .unwrap_err()
-            .contains(&repo.url()));
+        assert!(resolve_ref(
+            &repo.url(),
+            Some(&GitRefSelection::Rev("missing".to_string()))
+        )
+        .unwrap_err()
+        .contains(&repo.url()));
     }
 
     #[test]
@@ -423,10 +439,7 @@ mod tests {
 
     #[test]
     fn canonical_url_normalizes_local_paths() {
-        assert_eq!(
-            canonical_url("file://C:\\repo\\dep"),
-            "file:///C:/repo/dep"
-        );
+        assert_eq!(canonical_url("file://C:\\repo\\dep"), "file:///C:/repo/dep");
         assert_eq!(canonical_url("file://C:/repo/dep"), "file:///C:/repo/dep");
         assert_eq!(
             canonical_url("file:///C:\\repo\\dep"),
@@ -459,7 +472,11 @@ mod tests {
             "git+https://example.com/foo?tag=v1#abc"
         );
         assert_eq!(
-            source_string(url, Some(&GitRefSelection::Rev("def456".to_string())), "abc"),
+            source_string(
+                url,
+                Some(&GitRefSelection::Rev("def456".to_string())),
+                "abc"
+            ),
             "git+https://example.com/foo?rev=def456#abc"
         );
     }
@@ -480,4 +497,3 @@ mod tests {
         assert_ne!(head_dir, parent_dir);
     }
 }
-

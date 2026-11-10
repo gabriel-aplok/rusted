@@ -31,15 +31,16 @@ fn open_lock_file(path: &Path) -> io::Result<File> {
         .create(true)
         .read(true)
         .write(true)
+        .truncate(false)
         .open(path)
 }
 
 #[cfg(unix)]
 mod platform {
+    use std::fs::File;
     use std::io;
     use std::os::raw::c_int;
     use std::os::unix::io::AsRawFd;
-    use std::fs::File;
 
     const LOCK_EX: c_int = 2;
     const LOCK_NB: c_int = 4;
@@ -144,10 +145,7 @@ mod platform {
     }
 
     pub(super) fn try_lock(file: &File) -> io::Result<bool> {
-        lock_range(
-            file,
-            LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
-        )
+        lock_range(file, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY)
     }
 
     pub(super) fn lock_blocking(file: &File) -> io::Result<()> {

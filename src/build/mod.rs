@@ -177,7 +177,7 @@ pub(crate) struct Options<'a> {
 
 enum Preparation {
     Hit(Artifact),
-    Miss(Prepared),
+    Miss(Box<Prepared>),
 }
 
 struct Prepared {
@@ -724,6 +724,7 @@ pub(crate) fn run(
                         }
                     }
                     Preparation::Miss(prepared) => {
+                        let prepared = *prepared;
                         let unit = &plan.units[index];
                         if printed.insert(unit.package.clone())
                             && !options.quiet
@@ -742,10 +743,7 @@ pub(crate) fn run(
                         }
 
                         let job = Job {
-                            program: options
-                                .rustc_program
-                                .clone()
-                                .unwrap_or_else(|| rustc_program()),
+                            program: options.rustc_program.clone().unwrap_or_else(rustc_program),
                             unit: unit.clone(),
                             flags: prepared.flags,
                             mode: options.mode,
@@ -782,9 +780,7 @@ pub(crate) fn run(
                                         Err(JobError::Tool("rustc worker panicked".to_string()))
                                     }
                                 };
-                                if sender.send((index, result)).is_err() {
-                                    return;
-                                }
+                                let _ = sender.send((index, result));
                             });
                         match spawned {
                             Ok(_) => outstanding += 1,
@@ -1156,7 +1152,7 @@ fn prepare(
     };
     args.extend(options.rustc_extra_args.iter().cloned());
 
-    Ok(Preparation::Miss(Prepared {
+    Ok(Preparation::Miss(Box::new(Prepared {
         key,
         externs,
         flags,
@@ -1165,23 +1161,24 @@ fn prepare(
         env,
         args,
         out_dir,
-    }))
+    })))
 }
 
 fn package_environment(package: &PackageInfo, unit: &Unit) -> Vec<(String, String)> {
     let manifest = &package.manifest;
-    let mut environment = Vec::new();
-    environment.push((
-        "CARGO_MANIFEST_DIR".to_string(),
-        package.dir.display().to_string(),
-    ));
-    environment.push((
-        "CARGO_MANIFEST_PATH".to_string(),
-        package.manifest_path.display().to_string(),
-    ));
-    environment.push(("CARGO_CRATE_NAME".to_string(), unit.crate_name.clone()));
-    environment.push(("CARGO_PKG_NAME".to_string(), manifest.name.clone()));
-    environment.push(("CARGO_PKG_VERSION".to_string(), manifest.version.clone()));
+    let mut environment = vec![
+        (
+            "CARGO_MANIFEST_DIR".to_string(),
+            package.dir.display().to_string(),
+        ),
+        (
+            "CARGO_MANIFEST_PATH".to_string(),
+            package.manifest_path.display().to_string(),
+        ),
+        ("CARGO_CRATE_NAME".to_string(), unit.crate_name.clone()),
+        ("CARGO_PKG_NAME".to_string(), manifest.name.clone()),
+        ("CARGO_PKG_VERSION".to_string(), manifest.version.clone()),
+    ];
 
     if let Ok(version) = Version::parse(&manifest.version) {
         environment.push((
@@ -1511,9 +1508,7 @@ fn check_rust_versions(
 }
 
 fn parse_version_triple(text: &str) -> Option<(u64, u64, u64)> {
-    let core = text
-        .split(|character| character == '-' || character == '+')
-        .next()?;
+    let core = text.split(['-', '+']).next()?;
     let mut parts = core.split('.');
     let major = parts.next()?.parse().ok()?;
     let minor = parts
@@ -1547,12 +1542,14 @@ fn build_script_units(plan: &plan::Plan) -> BTreeMap<PackageId, usize> {
     units
 }
 
+type DependencyGraph = (Vec<Vec<usize>>, Vec<Vec<usize>>);
+
 fn dependency_graph(
     plan: &plan::Plan,
     lib_units: &BTreeMap<(PackageId, bool), usize>,
     build_script_units: &BTreeMap<PackageId, usize>,
     packages: &BTreeMap<PackageId, PackageInfo>,
-) -> Result<(Vec<Vec<usize>>, Vec<Vec<usize>>), Error> {
+) -> Result<DependencyGraph, Error> {
     let mut dependencies = vec![Vec::new(); plan.units.len()];
     for (index, unit) in plan.units.iter().enumerate() {
         for entry in &unit.externs {

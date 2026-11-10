@@ -108,7 +108,7 @@ impl SourceHashCache {
                 let Some(mtime_ns) = values.next().and_then(|value| value.parse().ok()) else {
                     continue;
                 };
-                let Some(hash) = values.next().and_then(|hash| decode_hex(hash)) else {
+                let Some(hash) = values.next().and_then(decode_hex) else {
                     continue;
                 };
                 entries.insert(
@@ -282,6 +282,7 @@ fn collect_files(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn artifact_key(
     unit: &Unit,
     flags: &Flags,

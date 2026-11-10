@@ -760,18 +760,18 @@ fn parse_target_list(
 }
 
 fn parse_target(table: &Table) -> Result<(TargetSpec, Vec<String>), String> {
-    let mut target = TargetSpec::default();
-
-    target.name = get_string(table, "target", "name")?;
-    target.path = get_string(table, "target", "path")?;
-    target.crate_types = get_string_list(table, "target", "crate-type")?.unwrap_or_default();
-    target.required_features =
-        get_string_list(table, "target", "required-features")?.unwrap_or_default();
-    target.proc_macro = get_bool(table, "target", "proc-macro")?;
-    target.test = get_bool(table, "target", "test")?;
-    target.bench = get_bool(table, "target", "bench")?;
-    target.doctest = get_bool(table, "target", "doctest")?;
-    target.harness = get_bool(table, "target", "harness")?;
+    let target = TargetSpec {
+        name: get_string(table, "target", "name")?,
+        path: get_string(table, "target", "path")?,
+        crate_types: get_string_list(table, "target", "crate-type")?.unwrap_or_default(),
+        required_features: get_string_list(table, "target", "required-features")?
+            .unwrap_or_default(),
+        proc_macro: get_bool(table, "target", "proc-macro")?,
+        test: get_bool(table, "target", "test")?,
+        bench: get_bool(table, "target", "bench")?,
+        doctest: get_bool(table, "target", "doctest")?,
+        harness: get_bool(table, "target", "harness")?,
+    };
 
     let unknown = table
         .iter()
@@ -821,7 +821,7 @@ fn parse_target_sections(
         };
         let mut deps = TargetDeps::default();
         for (kind, value) in entry.iter() {
-            match &kind[..] {
+            match kind {
                 "dependencies" | "dev-dependencies" | "build-dependencies" => {
                     let section = format!("target.{cfg}.{kind}");
                     let mut map = BTreeMap::new();
@@ -835,7 +835,7 @@ fn parse_target_sections(
                         }
                         map.insert(name.to_string(), dependency);
                     }
-                    match &kind[..] {
+                    match kind {
                         "dependencies" => deps.dependencies = map,
                         "dev-dependencies" => deps.dev_dependencies = map,
                         _ => deps.build_dependencies = map,
@@ -867,20 +867,21 @@ fn parse_features(root: &Table) -> Result<BTreeMap<String, Vec<String>>, String>
 }
 
 fn parse_workspace(table: &Table) -> Result<(Workspace, Vec<String>), String> {
-    let mut workspace = Workspace::default();
-
-    workspace.members = parse_member_list(table, "members")?;
-    workspace.exclude = parse_member_list(table, "exclude")?;
-    workspace.default_members = match table.get("default-members") {
-        None => None,
-        Some(_) => Some(parse_member_list(table, "default-members")?),
-    };
-    workspace.resolver = table
+    let resolver = table
         .get("resolver")
         .map(|value| parse_resolver(value, "workspace.resolver"))
         .transpose()?;
-    workspace.shared_package = table.get("package").and_then(Value::as_table).cloned();
-    workspace.shared_dependencies = table.get("dependencies").and_then(Value::as_table).cloned();
+    let workspace = Workspace {
+        members: parse_member_list(table, "members")?,
+        exclude: parse_member_list(table, "exclude")?,
+        default_members: match table.get("default-members") {
+            None => None,
+            Some(_) => Some(parse_member_list(table, "default-members")?),
+        },
+        resolver,
+        shared_package: table.get("package").and_then(Value::as_table).cloned(),
+        shared_dependencies: table.get("dependencies").and_then(Value::as_table).cloned(),
+    };
 
     let unknown = table
         .iter()
@@ -937,12 +938,10 @@ fn parse_profiles(
             package: BTreeMap::new(),
             build_override: None,
         };
-        if item.inherits.is_some() {
-            if matches!(&name[..], "dev" | "release") {
-                return Err(format!(
-                    "profile `{name}` cannot inherit, only custom profiles can"
-                ));
-            }
+        if item.inherits.is_some() && matches!(name, "dev" | "release") {
+            return Err(format!(
+                "profile `{name}` cannot inherit, only custom profiles can"
+            ));
         }
         for field in unknown {
             match field.as_str() {

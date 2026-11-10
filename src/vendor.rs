@@ -110,7 +110,7 @@ fn entry_for(directory: &Path, name: &str, version: &Version) -> Result<IndexEnt
     let manifest_path = directory.join("Cargo.toml");
     let text = fs::read_to_string(&manifest_path)
         .map_err(|error| format!("{}: {error}", manifest_path.display()))?;
-    let manifest = Manifest::parse(&text, &manifest_path).map_err(|error| format!("{error}"))?;
+    let manifest = Manifest::parse(&text, &manifest_path).map_err(|error| error.to_string())?;
     if manifest.name != name {
         return Err(format!(
             "{} declares package `{}`, expected `{name}`",

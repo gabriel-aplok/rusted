@@ -365,6 +365,7 @@ pub(crate) fn is_executable(path: &Path) -> bool {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn compile(
     program: &std::ffi::OsStr,
     unit_index: usize,
@@ -689,7 +690,7 @@ mod tests {
     use super::UnitKind;
     use crate::config::Config;
     use crate::manifest::ProfileEntry;
-    use crate::profile::{OptLevel, Profile};
+    use crate::profile::Profile;
 
     #[test]
     fn linker_changes_the_cache_key() {

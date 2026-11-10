@@ -141,7 +141,7 @@ struct Parser<'a> {
     depth: usize,
 }
 
-impl<'a> Parser<'a> {
+impl Parser<'_> {
     fn parse_value(&mut self) -> Result<Value, Error> {
         self.skip_whitespace();
         match self.peek() {

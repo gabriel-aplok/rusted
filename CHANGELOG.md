@@ -7,6 +7,7 @@ All notable changes to this project are recorded here. The format follows Keep a
 ### Added
 
 - Custom profiles support `inherits = "dev" / "release"` with chained resolution, cycle detection, and package and build overrides applied through the chain.
+- The integration suite dogfoods `rusted clippy` on the codebase itself and fails on any warning. All clippy lints are fixed or annotated.
 - `rusted vendor [PATH]` writes vendored crates with per-file sha256 checksums and a Cargo-style `.cargo/config.toml` replacement. Offline builds with source replacement resolve and compile registry crates straight from the vendor directory, with checksums verified on first use and cached through a `.cargo-ok` marker.
 - `[patch.crates-io]` and `[replace]` redirect registry dependencies to path or git sources. Consumer requirements, features, and optionality are kept, so a patched version must still satisfy every dependency requirement, and replace version pins apply only when the pinned version matches the consumer requirement.
 - Tag release pipeline with musl Linux, aarch64 Linux, macOS arm64, and Windows binaries, sha256 checksums, and an install script.

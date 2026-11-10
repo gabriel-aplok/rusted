@@ -768,7 +768,7 @@ fn process_dependency(
                 .lock
                 .map(|lock| lock.preferred_versions(&name, true))
                 .unwrap_or_default();
-            for (existing_id, _) in &state.packages {
+            for existing_id in state.packages.keys() {
                 if existing_id.name != name
                     || existing_id.source != PackageSource::Registry
                     || existing_id.context != build_context
@@ -848,6 +848,7 @@ fn process_dependency(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resolve_path_like(
     state: &mut State,
     queue: &mut VecDeque<Task>,
@@ -1351,10 +1352,7 @@ fn same_compatibility_class(left: &Version, right: &Version) -> bool {
 // Redirects Registry-source deps of a package through patch overrides and
 // replace entries. Consumer requirements, features, and optionality are kept,
 // so a patched version must still satisfy every dependency requirement.
-fn apply_source_overrides(
-    inheritance: &Inheritance,
-    deps: &mut Vec<DepMeta>,
-) -> Result<(), String> {
+fn apply_source_overrides(inheritance: &Inheritance, deps: &mut [DepMeta]) -> Result<(), String> {
     for dependency in deps.iter_mut() {
         if !matches!(dependency.source, DepSource::Registry) {
             continue;

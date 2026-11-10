@@ -73,7 +73,7 @@ fn gc_root(root: &Path, max_size: u64, dry_run: bool) -> Result<GcReport, String
     }
     entries.sort_by(|left, right| (left.2, &left.0).cmp(&(right.2, &right.0)));
 
-    let mut total = directory_size(&root)?;
+    let mut total = directory_size(root)?;
     let mut removed = Vec::new();
     for (key, bytes, _, path) in entries {
         if total <= max_size {
@@ -97,7 +97,7 @@ fn gc_root(root: &Path, max_size: u64, dry_run: bool) -> Result<GcReport, String
     let remaining = if dry_run {
         total
     } else {
-        directory_size(&root)?
+        directory_size(root)?
     };
     Ok(GcReport { removed, remaining })
 }

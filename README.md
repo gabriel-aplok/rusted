@@ -65,6 +65,7 @@ It installs `rusted.exe` in `%LOCALAPPDATA%\Programs\rusted`, adds that director
     rusted update
     rusted tree
     rusted metadata
+    rusted vendor [PATH]
     rusted clean [--project|--store|--index|--source|--all]
     rusted cache info
     rusted cache gc --max-size <SIZE> [--dry-run] [--remote]
@@ -72,6 +73,8 @@ It installs `rusted.exe` in `%LOCALAPPDATA%\Programs\rusted`, adds that director
 Build flags include `--release`, `--profile`, `--workspace`, `-p`, `--features`, `--all-features`, `--no-default-features`, `--locked`, `--frozen`, `--offline`, `--target <TRIPLE>`, `-j`, `--example <NAME>`, `--examples`, `--bench <NAME>`, `--benches`, `--stats`, and `--message-format=json`. Run `rusted help` for the full list.
 
 ## Configuration
+
+`rusted vendor` copies the resolved registry crates into `vendor/` with per-file sha256 checksums and prints the `.cargo/config.toml` source replacement to add. Building with `--offline` or `RUSTED_OFFLINE=1` then reads crates from the vendor directory, verifies the checksums, and never touches the registry index or the network.
 
 Global config lives at `${XDG_CONFIG_HOME:-~/.config}/rusted/config.toml`. Keys are `manifest`, `cache_dir`, `target_dir`, `jobs`, `offline`, `registry.index`, `linker`, and `profile.*`. Environment overrides are `RUSTED_MANIFEST`, `RUSTED_CACHE_DIR`, `RUSTED_TARGET_DIR`, `RUSTED_JOBS`, `RUSTED_OFFLINE`, and `RUSTED_RUSTC_LOG`.
 

@@ -1,5 +1,5 @@
-use std::collections::BTreeSet;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -271,7 +271,11 @@ fn profile_chain(
             ));
         }
         if builtin(&current) {
-            base = if current == "release" { "release" } else { "dev" };
+            base = if current == "release" {
+                "release"
+            } else {
+                "dev"
+            };
         }
         match manifest_profiles.get(&current) {
             Some(entry) => {
@@ -682,10 +686,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::Flags;
+    use super::UnitKind;
     use crate::config::Config;
     use crate::manifest::ProfileEntry;
     use crate::profile::{OptLevel, Profile};
-    use super::UnitKind;
 
     #[test]
     fn linker_changes_the_cache_key() {

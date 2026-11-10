@@ -85,10 +85,7 @@ fn format_files(
 ) -> Result<(), String> {
     let program = rustfmt_program();
     for (edition, files) in groups {
-        let mut arguments = vec![
-            "--edition".to_string(),
-            edition.as_str().to_string(),
-        ];
+        let mut arguments = vec!["--edition".to_string(), edition.as_str().to_string()];
         if check_only {
             arguments.push(CHECK_FLAG.to_string());
         }
@@ -258,11 +255,8 @@ mod tests {
 
         let entry =
             crate::manifest::select::discover_exact(&workspace.dir.join("Cargo.toml")).unwrap();
-        let loaded = crate::workspace::Workspace::load(
-            &entry,
-            crate::config::ManifestChoice::Auto,
-        )
-        .unwrap();
+        let loaded =
+            crate::workspace::Workspace::load(&entry, crate::config::ManifestChoice::Auto).unwrap();
         let dir = workspace.dir.canonicalize().unwrap();
         let groups = format_groups(&loaded, &loaded.default_targets).unwrap();
         assert_eq!(groups.len(), 2);

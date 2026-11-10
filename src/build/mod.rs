@@ -397,7 +397,13 @@ pub(crate) fn run(
 
     let cfg =
         Cfg::cached(&store.root().join(CFG_CACHE_DIR), options.target).map_err(Error::tool)?;
-    let mut index = IndexClient::new(config).map_err(Error::tool)?;
+    let replacement = crate::vendor::replacement(&workspace.root_dir).map_err(Error::tool)?;
+    let mut registry: Box<dyn resolve::Registry> = match &replacement {
+        Some(replacement) => Box::new(crate::vendor::VendorRegistry::new(
+            replacement.directory.clone(),
+        )),
+        None => Box::new(IndexClient::new(config).map_err(Error::tool)?),
+    };
     let crate_store = CrateStore::new(config).map_err(Error::tool)?;
     let git_root = store.root().join("git");
     let git_context = GitContext::new(git_root.clone(), config.offline);
@@ -413,7 +419,7 @@ pub(crate) fn run(
     };
     let resolution = resolve::resolve(
         &root_requests,
-        &mut index,
+        &mut *registry,
         &cfg,
         lock.as_ref(),
         config.manifest,
@@ -431,7 +437,7 @@ pub(crate) fn run(
     if options.locked {
         resolve::resolve(
             &root_requests,
-            &mut index,
+            &mut *registry,
             &cfg,
             lock.as_ref(),
             config.manifest,
@@ -442,7 +448,7 @@ pub(crate) fn run(
     } else {
         let lock_resolution = resolve::resolve(
             &root_requests,
-            &mut index,
+            &mut *registry,
             &cfg,
             lock.as_ref(),
             config.manifest,
@@ -459,32 +465,35 @@ pub(crate) fn run(
     check_rust_versions(&resolution, &needed, identity.release())?;
 
     let mut registry_requests: BTreeMap<PackageId, Request> = BTreeMap::new();
-    for (id, package) in &resolution.packages {
-        if !needed.contains(id) {
-            continue;
+    if replacement.is_none() {
+        let mut index = IndexClient::new(config).map_err(Error::tool)?;
+        for (id, package) in &resolution.packages {
+            if !needed.contains(id) {
+                continue;
+            }
+            if matches!(id.source, PackageSource::Registry) {
+                let checksum = package.checksum.clone().ok_or_else(|| {
+                    Error::tool(format!("registry package `{}` has no checksum", id.name))
+                })?;
+                let url = index
+                    .download_url(&id.name, &package.version)
+                    .map_err(Error::tool)?;
+                registry_requests.insert(
+                    id.clone(),
+                    Request {
+                        name: id.name.clone(),
+                        version: package.version.clone(),
+                        checksum,
+                        url,
+                    },
+                );
+            }
         }
-        if matches!(id.source, PackageSource::Registry) {
-            let checksum = package.checksum.clone().ok_or_else(|| {
-                Error::tool(format!("registry package `{}` has no checksum", id.name))
-            })?;
-            let url = index
-                .download_url(&id.name, &package.version)
-                .map_err(Error::tool)?;
-            registry_requests.insert(
-                id.clone(),
-                Request {
-                    name: id.name.clone(),
-                    version: package.version.clone(),
-                    checksum,
-                    url,
-                },
-            );
-        }
+        let requests: Vec<Request> = registry_requests.values().cloned().collect();
+        crate_store
+            .fetch_many(&requests, options.jobs)
+            .map_err(Error::tool)?;
     }
-    let requests: Vec<Request> = registry_requests.values().cloned().collect();
-    crate_store
-        .fetch_many(&requests, options.jobs)
-        .map_err(Error::tool)?;
 
     let mut packages = BTreeMap::new();
     for (id, package) in &resolution.packages {
@@ -530,10 +539,20 @@ pub(crate) fn run(
                 (manifest, manifest_path, dir)
             }
             PackageSource::Registry => {
-                let request = registry_requests
-                    .get(id)
-                    .ok_or_else(|| Error::tool(format!("missing download for `{}`", id.name)))?;
-                let dir = crate_store.source(request).map_err(Error::tool)?;
+                let dir = match &replacement {
+                    Some(replacement) => crate::vendor::source_dir(
+                        &replacement.directory,
+                        &id.name,
+                        &package.version,
+                    )
+                    .map_err(Error::tool)?,
+                    None => {
+                        let request = registry_requests.get(id).ok_or_else(|| {
+                            Error::tool(format!("missing download for `{}`", id.name))
+                        })?;
+                        crate_store.source(request).map_err(Error::tool)?
+                    }
+                };
                 let manifest_path = dir.join("Cargo.toml");
                 let text = std::fs::read_to_string(&manifest_path).map_err(|error| {
                     Error::tool(format!("{}: {error}", manifest_path.display()))
@@ -1767,7 +1786,12 @@ pub(crate) fn clippy_driver() -> Result<PathBuf, String> {
     let rustc_env = std::env::var_os(RUSTC_ENV);
     let path_match = std::env::var_os(PATH_ENV);
     let bin_dirs = cargo_bin_dirs();
-    clippy_driver_from(&name, rustc_env.as_deref(), path_match.as_deref(), &bin_dirs)
+    clippy_driver_from(
+        &name,
+        rustc_env.as_deref(),
+        path_match.as_deref(),
+        &bin_dirs,
+    )
 }
 
 fn clippy_driver_from(

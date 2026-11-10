@@ -9,6 +9,8 @@ use crate::cache;
 use crate::config::{cache_root, Config, MAX_PARALLELISM};
 use crate::manifest::edit::{add_dependency, remove_dependency};
 use crate::manifest::select::{discover, discover_exact, ManifestFile};
+use crate::registry::download::{CrateStore, Request};
+use crate::registry::extract::ensure_extracted;
 use crate::registry::index::IndexClient;
 use crate::report;
 use crate::resolver::cfg::Cfg;
@@ -17,6 +19,7 @@ use crate::resolver::resolve::{
     self, BuildContext, PackageId, PackageSource, Resolution, RootOptions, RootPackage,
 };
 use crate::resolver::semver::Version;
+use crate::vendor::{self, VendorRegistry};
 use crate::workspace::{Package, PackageKey, Workspace};
 
 pub const VERSION: &str = "0.1.0";
@@ -37,6 +40,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("update", "Update the lockfile"),
     ("tree", "Print the dependency tree"),
     ("metadata", "Print the workspace graph as JSON"),
+    ("vendor", "Vendor registry dependencies into the workspace"),
     ("cache", "Inspect or clean the global cache"),
     ("help", "Print help"),
     ("version", "Print the version"),
@@ -81,6 +85,7 @@ enum CommandKind {
     Update,
     Tree,
     Metadata,
+    Vendor,
 }
 
 impl CommandKind {
@@ -154,6 +159,8 @@ struct Options {
     clean_source: bool,
     clean_all: bool,
     check_only: bool,
+    no_delete: bool,
+    output: Option<String>,
     help: bool,
 }
 
@@ -204,6 +211,7 @@ where
         "update" => command(CommandKind::Update, args),
         "tree" => command(CommandKind::Tree, args),
         "metadata" => command(CommandKind::Metadata, args),
+        "vendor" => command(CommandKind::Vendor, args),
         "cache" => cache_command(args),
         "new" => new_command(args),
         "init" => init_command(args),
@@ -230,6 +238,7 @@ where
         CommandKind::Update => update(&options),
         CommandKind::Tree => tree(&options),
         CommandKind::Metadata => metadata(&options),
+        CommandKind::Vendor => vendor(&options),
         CommandKind::Build
         | CommandKind::Check
         | CommandKind::Clippy
@@ -576,6 +585,97 @@ fn metadata(options: &Options) -> Result<i32, Failure> {
     Ok(0)
 }
 
+fn vendor(options: &Options) -> Result<i32, Failure> {
+    let (config, _, workspace) = load_workspace(options)?;
+    let output = workspace
+        .root_dir
+        .join(options.output.as_deref().unwrap_or("vendor"));
+    if output.is_file() {
+        return Err(Failure::tool(format!("`{}` is a file", output.display())));
+    }
+    if output == workspace.root_dir {
+        return Err(Failure::tool("the vendor directory is the workspace root"));
+    }
+
+    let lock = read_lockfile(&workspace)?;
+    let (resolution, _) = resolve_workspace(
+        &config,
+        &workspace,
+        &workspace.members,
+        lock.as_ref(),
+        options.frozen,
+        true,
+    )?;
+
+    let mut index = IndexClient::new(&config).map_err(Failure::tool)?;
+    let mut requests: Vec<Request> = Vec::new();
+    for (id, package) in &resolution.packages {
+        if !matches!(id.source, PackageSource::Registry) {
+            continue;
+        }
+        let checksum = package.checksum.clone().ok_or_else(|| {
+            Failure::tool(format!("registry package `{}` has no checksum", id.name))
+        })?;
+        let url = index
+            .download_url(&id.name, &package.version)
+            .map_err(Failure::tool)?;
+        requests.push(Request {
+            name: id.name.clone(),
+            version: package.version.clone(),
+            checksum,
+            url,
+        });
+    }
+
+    let store = CrateStore::new(&config).map_err(Failure::tool)?;
+    let jobs = options
+        .jobs
+        .or(config.jobs)
+        .unwrap_or_else(default_jobs)
+        .min(MAX_PARALLELISM);
+    let tarballs = store.fetch_many(&requests, jobs).map_err(Failure::tool)?;
+
+    if output.exists() && !options.no_delete {
+        std::fs::remove_dir_all(&output)
+            .map_err(|error| Failure::tool(format!("{}: {error}", output.display())))?;
+    }
+    std::fs::create_dir_all(&output)
+        .map_err(|error| Failure::tool(format!("{}: {error}", output.display())))?;
+
+    let store_root = cache_root(&config).map_err(Failure::tool)?.join("v1");
+    for (request, tarball) in requests.iter().zip(&tarballs) {
+        let extracted = ensure_extracted(&store_root, request, tarball).map_err(Failure::tool)?;
+        vendor::write_crate(
+            &output,
+            &request.name,
+            &request.version,
+            &request.checksum,
+            &extracted,
+        )
+        .map_err(Failure::tool)?;
+    }
+
+    if !options.quiet {
+        let directory = options.output.as_deref().unwrap_or("vendor");
+        println!(
+            "Vendored {} packages into {}",
+            requests.len(),
+            output.display()
+        );
+        println!();
+        println!("To build offline with these sources, add this to .cargo/config.toml:");
+        println!();
+        println!("[source.crates-io]");
+        println!("replace-with = \"vendored-sources\"");
+        println!();
+        println!("[source.vendored-sources]");
+        println!("directory = \"{directory}\"");
+        println!();
+        println!("Then run builds with `--offline` or RUSTED_OFFLINE=1.");
+    }
+    Ok(0)
+}
+
 fn required_name(options: &Options) -> Result<String, Failure> {
     options
         .name
@@ -724,7 +824,11 @@ fn resolve_workspace(
 
     let cache_root = cache_root(config).map_err(Failure::tool)?;
     let cfg = Cfg::cached(&cache_root.join("v1").join("cfg-cache"), None).map_err(Failure::tool)?;
-    let mut index = IndexClient::new(config).map_err(Failure::tool)?;
+    let replacement = vendor::replacement(&workspace.root_dir).map_err(Failure::tool)?;
+    let mut registry: Box<dyn resolve::Registry> = match &replacement {
+        Some(replacement) => Box::new(VendorRegistry::new(replacement.directory.clone())),
+        None => Box::new(IndexClient::new(config).map_err(Failure::tool)?),
+    };
     let git_context = resolve::GitContext::new(cache_root.join("v1").join("git"), config.offline);
     let options = RootOptions {
         inheritance: Some(workspace.inheritance()),
@@ -736,7 +840,7 @@ fn resolve_workspace(
     };
     let resolution = resolve::resolve(
         &root_requests,
-        &mut index,
+        &mut *registry,
         &cfg,
         lock,
         config.manifest,
@@ -1058,6 +1162,13 @@ where
                 }
                 options.test_filter = Some(text.into_owned());
             }
+            "--no-delete" if kind == CommandKind::Vendor => options.no_delete = true,
+            _ if kind == CommandKind::Vendor && !text.starts_with('-') => {
+                if options.output.is_some() {
+                    return Err(Failure::tool("`vendor` accepts one output directory"));
+                }
+                options.output = Some(text.into_owned());
+            }
             _ if (kind == CommandKind::Add || kind == CommandKind::Remove)
                 && !text.starts_with('-') =>
             {
@@ -1183,6 +1294,7 @@ fn command_name(kind: CommandKind) -> &'static str {
         CommandKind::Update => "update",
         CommandKind::Tree => "tree",
         CommandKind::Metadata => "metadata",
+        CommandKind::Vendor => "vendor",
     }
 }
 
@@ -1468,6 +1580,9 @@ fn print_command_help(kind: CommandKind) {
         CommandKind::Add | CommandKind::Remove => {
             format!("Usage: rusted {name} <NAME> [OPTIONS]")
         }
+        CommandKind::Vendor => {
+            format!("Usage: rusted {name} [PATH] [OPTIONS]")
+        }
         _ => format!("Usage: rusted {name} [OPTIONS]"),
     };
     println!("{}", command_about(kind));
@@ -1527,6 +1642,9 @@ fn print_command_help(kind: CommandKind) {
         println!("      --check                Fail when files are not rustfmt clean");
         println!("      ARGS after `--`        Passed through to rustfmt");
     }
+    if kind == CommandKind::Vendor {
+        println!("      --no-delete            Keep existing vendored crates");
+    }
     if kind == CommandKind::Clean {
         println!("      --project              Remove the project target directory (default)");
         println!("      --store                Remove cached artifacts and build scripts");
@@ -1558,6 +1676,7 @@ fn command_about(kind: CommandKind) -> &'static str {
         CommandKind::Update => "Update the lockfile",
         CommandKind::Tree => "Print the dependency tree",
         CommandKind::Metadata => "Print the workspace graph as JSON",
+        CommandKind::Vendor => "Vendor registry dependencies into the workspace",
     }
 }
 

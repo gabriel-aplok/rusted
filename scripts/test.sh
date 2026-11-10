@@ -123,6 +123,17 @@ if [ "$mode" = integration ] || [ "$mode" = all ]; then
     test -x "$it/targets/debug/examples/adder"
     expect_rustc
 
+    vendor_fx=tests/fixtures/vendor-offline/Cargo.toml
+    vendor_cache="$it/vendor-cache"
+    RUSTED_CACHE_DIR="$vendor_cache" "$bin" build --offline \
+        --manifest-path "$vendor_fx" --target-dir "$it/vendor" -q
+    vendor_output=$(RUSTED_CACHE_DIR="$vendor_cache" "$bin" run --offline \
+        --manifest-path "$vendor_fx" --target-dir "$it/vendor" -q)
+    if [ "$vendor_output" != "hello vendor" ]; then
+        echo "unexpected vendor fixture output: $vendor_output" >&2
+        exit 1
+    fi
+
     clear_log
     "$bin" build --examples --manifest-path "$fx" --target-dir "$it/targets" -q
     expect_no_rustc

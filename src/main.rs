@@ -10,6 +10,7 @@ mod report;
 mod resolver;
 mod toml;
 mod util;
+mod vendor;
 mod workspace;
 
 fn main() {

@@ -31,6 +31,10 @@ jobs:
           rustup default stable-msvc
           mkdir target/bootstrap
           rustc --edition 2021 --crate-name rusted -C opt-level=0 -C debuginfo=0 -C strip=debuginfo -C codegen-units=16 src/main.rs -o target/bootstrap/rusted.exe
+      - name: Check rustdoc
+        run: |
+          rustdoc --version
+          Get-Command rustdoc | Format-List Source
       - name: Test
         run: |
           mkdir target/tests

@@ -283,8 +283,12 @@ mod test_support {
         if super::rustdoc_available() {
             return true;
         }
+        let program = super::rustdoc_program();
         if std::env::var_os(CI_ENV).is_some() {
-            panic!("rustdoc is missing, but CI runners must provide it");
+            panic!(
+                "rustdoc is missing, but CI runners must provide it; program `{}` searched by name on PATH",
+                program.to_string_lossy()
+            );
         }
         false
     }

@@ -223,6 +223,7 @@ pub(crate) mod test_support {
 
         pub(crate) fn git(&self, args: &[&str]) -> String {
             let output = Command::new(GIT)
+                .args(["-c", "user.name=rusted", "-c", "user.email=rusted@example.com"])
                 .args(args)
                 .current_dir(&self.dir)
                 .output()

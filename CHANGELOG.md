@@ -6,6 +6,10 @@ All notable changes to this project are recorded here. The format follows Keep a
 
 ### Added
 
+- Tag release pipeline with musl Linux, aarch64 Linux, macOS arm64, and Windows binaries, sha256 checksums, and an install script.
+
+### Added
+
 - Git dependencies: `foo = { git = "<url>", branch | tag | rev }` with pinned full revisions in `Cargo.lock`, per-revision source caching, `--locked`, `--offline`, and `rusted update` re-pinning.
 - `rusted doc` builds rustdoc for the workspace lib, bin, and proc-macro targets into `<target>/doc`, reusing compiled dependency artifacts, with `--open`, `--document-private-items`, and `--` pass-through.
 - `--target <TRIPLE>` on `build`, `check`, `run`, `test`, `doc`, and `clippy`: cargo-compatible `<target>/<triple>/<profile>` layout, host-rooted build scripts and proc macros, per-triple cfg caches and artifact keys, and cross-run refusals.

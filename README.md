@@ -35,6 +35,14 @@ Linux, or Windows 10 and 11 x64 with rustc 1.85 or newer, `curl`, and `tar`. Git
     ./target/bootstrap/rusted run --manifest-path hello/Cargo.toml
     install -m 755 target/bootstrap/rusted ~/.local/bin/rusted
 
+## Install
+
+One command, no dependence on Rust or Cargo on the target machine:
+
+    curl -fsSL https://github.com/gabriel-aplok/rusted/raw/main/install.sh | sh
+
+It downloads the latest GitHub release, checks its sha256, and installs the binary in `$HOME/.local/bin`. Set `RUSTED_INSTALL_DIR` to pick another directory. Windows users download `rusted-x86_64-pc-windows-msvc.exe` from the release page.
+
 ## Commands
 
     rusted new <PATH>

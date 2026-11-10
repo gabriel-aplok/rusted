@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -11,6 +12,12 @@ use crate::profile::{DebugInfo, Linker, Lto, OptLevel, Panic, Profile, Strip};
 
 use super::plan::{Unit, UnitKind};
 use super::{MessageFormat, Mode};
+
+struct OwnedEntry {
+    settings: Profile,
+    packages: Option<BTreeMap<String, Profile>>,
+    build_override: Option<Profile>,
+}
 
 pub(crate) struct Diagnostics {
     pub(crate) stderr: Vec<u8>,
@@ -97,9 +104,10 @@ impl Flags {
         package_name: &str,
         kind: UnitKind,
         target: Option<&str>,
-    ) -> Result<Self, String> {
-        let release = profile_name == "release";
-        let mut flags = if release {
+    ) -> Result<Flags, String> {
+        let (chain, base) = profile_chain(&config.profiles, profiles, profile_name)?;
+        let release_base = base == "release";
+        let mut flags = if release_base {
             Self {
                 opt_level: "3",
                 debug_info: "0",
@@ -132,18 +140,19 @@ impl Flags {
         };
         flags.target = target.map(str::to_string);
         flags.linker_choice = config.linker.clone();
-        flags.incremental = profile_name == "dev";
+        flags.incremental = !release_base;
 
-        if let Some(profile) = config.profiles.get(profile_name) {
-            flags.merge(profile);
-        }
-        if let Some(entry) = profiles.get(profile_name) {
+        let mut entries = chain.iter().collect::<Vec<_>>();
+        entries.reverse();
+        for entry in &entries {
             flags.merge(&entry.settings);
-            if let Some(settings) = entry.package.get("*") {
-                flags.merge(settings);
-            }
-            if let Some(settings) = entry.package.get(package_name) {
-                flags.merge(settings);
+            if let Some(package_overrides) = &entry.packages {
+                if let Some(settings) = package_overrides.get("*") {
+                    flags.merge(settings);
+                }
+                if let Some(settings) = package_overrides.get(package_name) {
+                    flags.merge(settings);
+                }
             }
             if kind == UnitKind::BuildScript || kind == UnitKind::ProcMacro {
                 if let Some(settings) = &entry.build_override {
@@ -240,6 +249,71 @@ impl Flags {
 
 pub(crate) fn program() -> std::ffi::OsString {
     super::rustc_program()
+}
+
+// Chains a custom profile through its `inherits` links down to a builtin
+// (`dev` or `release`). Returns the entries leaf-first, with the builtin base.
+fn profile_chain(
+    config_profiles: &BTreeMap<String, Profile>,
+    manifest_profiles: &BTreeMap<String, ProfileEntry>,
+    profile_name: &str,
+) -> Result<(Vec<OwnedEntry>, &'static str), String> {
+    let builtin = |name: &str| matches!(name, "dev" | "release");
+    let mut chain: Vec<OwnedEntry> = Vec::new();
+    let mut visited = BTreeSet::new();
+    let mut current = profile_name.to_string();
+    let mut base: &'static str = "dev";
+
+    loop {
+        if !visited.insert(current.clone()) {
+            return Err(format!(
+                "profile chain for `{profile_name}` has a cycle at `{current}`"
+            ));
+        }
+        if builtin(&current) {
+            base = if current == "release" { "release" } else { "dev" };
+        }
+        match manifest_profiles.get(&current) {
+            Some(entry) => {
+                if entry.inherits.is_some() && builtin(&current) {
+                    return Err(format!(
+                        "profile `{current}` cannot inherit, only custom profiles can"
+                    ));
+                }
+                if entry.inherits.is_none() && !builtin(&current) {
+                    return Err(format!(
+                        "profile `{current}` must specify inherits = \"dev\" or inherits = \"release\""
+                    ));
+                }
+                chain.push(OwnedEntry {
+                    settings: entry.settings.clone(),
+                    packages: Some(entry.package.clone()),
+                    build_override: entry.build_override.clone(),
+                });
+                if let Some(next) = &entry.inherits {
+                    current = next.clone();
+                    continue;
+                }
+                break;
+            }
+            None => match config_profiles.get(&current) {
+                Some(config_entry) => {
+                    chain.push(OwnedEntry {
+                        settings: config_entry.clone(),
+                        packages: None,
+                        build_override: None,
+                    });
+                    break;
+                }
+                None => {
+                    // A builtin is its own base. An undefined custom profile
+                    // runs with dev defaults.
+                    break;
+                }
+            },
+        }
+    }
+    Ok((chain, base))
 }
 
 fn resolve_linker(choice: Option<&Linker>) -> Result<Option<String>, String> {
@@ -605,7 +679,13 @@ fn debug_info(debug: DebugInfo) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::Flags;
+    use crate::config::Config;
+    use crate::manifest::ProfileEntry;
+    use crate::profile::{OptLevel, Profile};
+    use super::UnitKind;
 
     #[test]
     fn linker_changes_the_cache_key() {
@@ -624,5 +704,155 @@ mod tests {
         assert!(right
             .cache_key_material()
             .ends_with("target=aarch64-unknown-linux-gnu"));
+    }
+
+    #[test]
+    fn profile_inherits_merge_over_the_base_profile() {
+        let config = Config {
+            profiles: BTreeMap::new(),
+            ..Config::load().unwrap()
+        };
+        let mut manifest_profiles = BTreeMap::new();
+        manifest_profiles.insert(
+            "fast".to_string(),
+            ProfileEntry {
+                inherits: Some("dev".to_string()),
+                settings: Profile {
+                    opt_level: Some(crate::profile::OptLevel::O3),
+                    ..Profile::default()
+                },
+                package: BTreeMap::new(),
+                build_override: None,
+            },
+        );
+        let flags = Flags::resolve(
+            &config,
+            &manifest_profiles,
+            "fast",
+            false,
+            "app",
+            UnitKind::Bin,
+            None,
+        )
+        .unwrap();
+        assert_eq!(flags.opt_level(), "3");
+        // inherited dev base: debug assertions and incremental stay on
+        assert!(flags.debug_assertions);
+        assert!(flags.incremental());
+    }
+
+    #[test]
+    fn profile_chains_apply_from_the_base_up() {
+        let config = Config {
+            profiles: BTreeMap::new(),
+            ..Config::load().unwrap()
+        };
+        let mut manifest_profiles = BTreeMap::new();
+        manifest_profiles.insert(
+            "outer".to_string(),
+            ProfileEntry {
+                inherits: Some("inner".to_string()),
+                settings: Profile {
+                    opt_level: Some(crate::profile::OptLevel::O2),
+                    ..Profile::default()
+                },
+                package: BTreeMap::new(),
+                build_override: None,
+            },
+        );
+        manifest_profiles.insert(
+            "inner".to_string(),
+            ProfileEntry {
+                inherits: Some("dev".to_string()),
+                settings: Profile {
+                    codegen_units: Some(1),
+                    ..Profile::default()
+                },
+                package: BTreeMap::new(),
+                build_override: None,
+            },
+        );
+        let flags = Flags::resolve(
+            &config,
+            &manifest_profiles,
+            "outer",
+            false,
+            "app",
+            UnitKind::Bin,
+            None,
+        )
+        .unwrap();
+        assert_eq!(flags.opt_level(), "2");
+        assert_eq!(flags.codegen_units, 1);
+        assert!(flags.debug_assertions);
+    }
+
+    #[test]
+    fn custom_profiles_require_inherits() {
+        let config = Config {
+            profiles: BTreeMap::new(),
+            ..Config::load().unwrap()
+        };
+        let mut manifest_profiles = BTreeMap::new();
+        manifest_profiles.insert(
+            "fast".to_string(),
+            ProfileEntry {
+                inherits: None,
+                settings: Profile::default(),
+                package: BTreeMap::new(),
+                build_override: None,
+            },
+        );
+        let error = Flags::resolve(
+            &config,
+            &manifest_profiles,
+            "fast",
+            false,
+            "app",
+            UnitKind::Bin,
+            None,
+        )
+        .err()
+        .expect("profile resolution must fail");
+        assert!(error.contains("must specify inherits"), "{error}");
+    }
+
+    #[test]
+    fn profile_cycles_are_rejected() {
+        let config = Config {
+            profiles: BTreeMap::new(),
+            ..Config::load().unwrap()
+        };
+        let mut manifest_profiles = BTreeMap::new();
+        manifest_profiles.insert(
+            "a".to_string(),
+            ProfileEntry {
+                inherits: Some("b".to_string()),
+                settings: Profile::default(),
+                package: BTreeMap::new(),
+                build_override: None,
+            },
+        );
+        manifest_profiles.insert(
+            "b".to_string(),
+            ProfileEntry {
+                inherits: Some("a".to_string()),
+                settings: Profile::default(),
+                package: BTreeMap::new(),
+                build_override: None,
+            },
+        );
+        let error = Flags::resolve(
+            &config,
+            &manifest_profiles,
+            "a",
+            false,
+            "app",
+            UnitKind::Bin,
+            None,
+        )
+        .err()
+        .expect("profile resolution must fail");
+        assert!(error.contains("cycle"), "{error}");
     }
 }

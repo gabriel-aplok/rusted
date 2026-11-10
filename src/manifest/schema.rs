@@ -221,6 +221,7 @@ pub(crate) struct Workspace {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ProfileEntry {
+    pub(crate) inherits: Option<String>,
     pub(crate) settings: Profile,
     pub(crate) package: BTreeMap<String, Profile>,
     pub(crate) build_override: Option<Profile>,
@@ -875,12 +876,27 @@ fn parse_profiles(
         let Value::Table(entry) = value else {
             return Err(format!("`profile.{name}` must be a table"));
         };
+        let inherits = match entry.get("inherits") {
+            None => None,
+            Some(Value::String(base)) => Some(base.clone()),
+            Some(_) => {
+                return Err(format!("`profile.{name}.inherits` must be a string"))
+            }
+        };
         let (settings, unknown) = Profile::from_table(entry)?;
         let mut item = ProfileEntry {
+            inherits,
             settings,
             package: BTreeMap::new(),
             build_override: None,
         };
+        if item.inherits.is_some() {
+            if matches!(&name[..], "dev" | "release") {
+                return Err(format!(
+                    "profile `{name}` cannot inherit, only custom profiles can"
+                ));
+            }
+        }
         for field in unknown {
             match field.as_str() {
                 "package" => {

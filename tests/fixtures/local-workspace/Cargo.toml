@@ -12,4 +12,5 @@ left = { path = "left" }
 right = { path = "right" }
 
 [profile.fast]
+inherits = "dev"
 opt-level = 2

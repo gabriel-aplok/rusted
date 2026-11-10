@@ -1,0 +1,4 @@
+[package]
+name = "itoa"
+version = "1.0.99"
+edition = "2021"

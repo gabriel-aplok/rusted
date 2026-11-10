@@ -5,8 +5,8 @@ pub(crate) mod select;
 use std::path::Path;
 
 pub(crate) use schema::{
-    BuildScript, Dependency, DependencyKind, Edition, GitSource, Manifest, ProfileEntry, TargetSpec,
-    Workspace as WorkspaceConfig,
+    BuildScript, Dependency, DependencyKind, Edition, GitSource, Manifest, ProfileEntry,
+    TargetSpec, Workspace as WorkspaceConfig,
 };
 
 impl Manifest {
@@ -17,16 +17,9 @@ impl Manifest {
     }
 
     pub(crate) fn unsupported_features(&self) -> Vec<String> {
-        let mut out = Vec::new();
-
-        if self.patch.is_some() {
-            out.push("[patch] sections".into());
-        }
-        if self.replace.is_some() {
-            out.push("[replace] sections".into());
-        }
-
-        out
+        // Git dependencies, patch overrides, and replace entries are all
+        // supported now.
+        Vec::new()
     }
 }
 
@@ -218,27 +211,6 @@ mod tests {
             ));
             assert_eq!(manifest.edition.as_str(), edition);
         }
-    }
-
-    #[test]
-    fn reports_unsupported_features() {
-        let manifest = parse_manifest(
-            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[patch.crates-io]\nfoo = { path = \"../foo\" }\n",
-        );
-
-        assert_eq!(
-            manifest.unsupported_features(),
-            vec!["[patch] sections".to_string()]
-        );
-    }
-
-    #[test]
-    fn accepts_git_dependencies() {
-        let manifest = parse_manifest(
-            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[dependencies]\nfoo = { git = \"https://example.com/x\", branch = \"main\" }\n",
-        );
-
-        assert!(manifest.unsupported_features().is_empty());
     }
 
     #[test]

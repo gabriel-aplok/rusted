@@ -267,8 +267,8 @@ pub(crate) struct Manifest {
     pub(crate) lints: Option<Table>,
     pub(crate) badges: Option<Table>,
     pub(crate) metadata: Option<Table>,
-    pub(crate) patch: Option<Table>,
-    pub(crate) replace: Option<Table>,
+    pub(crate) patch: BTreeMap<String, Dependency>,
+    pub(crate) replace: BTreeMap<String, Dependency>,
     pub(crate) warnings: Vec<String>,
     pub(crate) inherited: BTreeSet<&'static str>,
 }
@@ -360,8 +360,8 @@ pub(crate) fn map(root: &Table) -> Result<Manifest, String> {
 
     let profiles = parse_profiles(root, &mut warnings)?;
 
-    let patch = parse_optional_table(root, "patch")?;
-    let replace = parse_optional_table(root, "replace")?;
+    let patch = parse_source_overrides(root, "patch", &mut warnings)?;
+    let replace = parse_source_overrides(root, "replace", &mut warnings)?;
     let lints = parse_optional_table(root, "lints")?;
     let badges = parse_optional_table(root, "badges")?;
 
@@ -659,6 +659,55 @@ fn parse_readme(package: &Table) -> Result<Option<String>, String> {
     }
 }
 
+// Parses `[patch.<registry>]` override tables and the deprecated `[replace]`
+// table. Only the crates.io registry is supported for patches.
+fn parse_source_overrides(
+    root: &Table,
+    section: &str,
+    warnings: &mut Vec<String>,
+) -> Result<BTreeMap<String, Dependency>, String> {
+    let table = match root.get(section) {
+        None => return Ok(BTreeMap::new()),
+        Some(Value::Table(table)) => table,
+        Some(_) => return Err(format!("`[{section}]` must be a table")),
+    };
+
+    if section == "patch" {
+        let mut out = BTreeMap::new();
+        for (registry, value) in table.iter() {
+            if registry != "crates-io" {
+                return Err(format!(
+                    "`{section}.{registry}` patches registry `{registry}`, but only crates-io is supported"
+                ));
+            }
+            let Value::Table(names) = value else {
+                return Err(format!("`[patch.{registry}]` must be a table"));
+            };
+            for (name, value) in names.iter() {
+                let (dependency, unknown) =
+                    dependency(name, value, &format!("{section}.{registry}"))?;
+                for field in unknown {
+                    warnings.push(format!(
+                        "unknown field `{field}` in `{section}.{registry}.{name}`"
+                    ));
+                }
+                out.insert(name.to_string(), dependency);
+            }
+        }
+        return Ok(out);
+    }
+
+    let mut out = BTreeMap::new();
+    for (key, value) in table.iter() {
+        let (dependency, unknown) = dependency(key, value, &format!("{section}.{key}"))?;
+        for field in unknown {
+            warnings.push(format!("unknown field `{field}` in `{section}.{key}`"));
+        }
+        out.insert(key.to_string(), dependency);
+    }
+    Ok(out)
+}
+
 fn parse_optional_table(root: &Table, key: &str) -> Result<Option<Table>, String> {
     match root.get(key) {
         None => Ok(None),
@@ -879,9 +928,7 @@ fn parse_profiles(
         let inherits = match entry.get("inherits") {
             None => None,
             Some(Value::String(base)) => Some(base.clone()),
-            Some(_) => {
-                return Err(format!("`profile.{name}.inherits` must be a string"))
-            }
+            Some(_) => return Err(format!("`profile.{name}.inherits` must be a string")),
         };
         let (settings, unknown) = Profile::from_table(entry)?;
         let mut item = ProfileEntry {

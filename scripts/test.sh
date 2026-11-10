@@ -824,6 +824,16 @@ assert any(target["kind"] == ["lib"] for target in core["targets"])
         printf '%s' "$multi_tree" | grep -q 'bitflags v1\.'
         printf '%s' "$multi_tree" | grep -q 'bitflags v2\.'
 
+        patch_fixture=tests/fixtures/patch-replace/Cargo.toml
+        patch_output=$("$bin" run --manifest-path "$patch_fixture" --target-dir "$it/patch-replace" -q)
+        if [ "$patch_output" != "77 20" ]; then
+            echo "unexpected patch fixture output: $patch_output" >&2
+            exit 1
+        fi
+        patch_tree=$("$bin" tree --manifest-path "$patch_fixture")
+        printf '%s' "$patch_tree" | grep -q 'itoa v1\.0\.99'
+        printf '%s' "$patch_tree" | grep -q 'libc v0\.2\.170'
+
         ecosystem_fixture=tests/fixtures/ecosystem/Cargo.toml
         ecosystem_output=$("$bin" run --manifest-path "$ecosystem_fixture" --target-dir "$it/ecosystem" -q)
         if [ "$(printf '%s\n' "$ecosystem_output" | head -1)" != '{"value":42}' ]; then

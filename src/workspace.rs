@@ -8,6 +8,7 @@ use crate::manifest::select::{discover, ManifestFile, CARGO_MANIFEST_FILE, RUSTE
 use crate::manifest::{
     Dependency, DependencyKind, Edition, Manifest, ProfileEntry, WorkspaceConfig,
 };
+use crate::resolver::semver::{Version, VersionReq};
 use crate::toml::Table;
 
 #[cfg(test)]
@@ -53,6 +54,8 @@ pub(crate) struct Workspace {
     pub(crate) packages: BTreeMap<PackageKey, Package>,
     pub(crate) members: Vec<PackageKey>,
     pub(crate) default_targets: Vec<PackageKey>,
+    pub(crate) patches: BTreeMap<String, Dependency>,
+    pub(crate) replaces: BTreeMap<String, Dependency>,
     pub(crate) shared_package: Option<Table>,
     pub(crate) shared_dependencies: Option<Table>,
     pub(crate) resolver: u32,
@@ -62,6 +65,8 @@ pub(crate) struct Workspace {
 #[derive(Clone, Debug)]
 pub(crate) struct Inheritance {
     pub(crate) workspace_dir: PathBuf,
+    pub(crate) patches: BTreeMap<String, Dependency>,
+    pub(crate) replaces: BTreeMap<String, Dependency>,
     pub(crate) shared_package: Option<Table>,
     pub(crate) shared_dependencies: Option<Table>,
     pub(crate) member_dirs: BTreeSet<PathBuf>,
@@ -77,6 +82,8 @@ impl Workspace {
     pub(crate) fn inheritance(&self) -> Inheritance {
         Inheritance {
             workspace_dir: self.root_dir.clone(),
+            patches: self.patches.clone(),
+            replaces: self.replaces.clone(),
             shared_package: self.shared_package.clone(),
             shared_dependencies: self.shared_dependencies.clone(),
             member_dirs: self.members.iter().map(|key| key.dir.clone()).collect(),
@@ -414,6 +421,9 @@ fn assemble(root: &RootFile<'_>, choice: ManifestChoice) -> Result<Workspace, St
         },
     };
 
+    let patches = absolute_source_overrides(&root_file.manifest.patch, &root_dir);
+    let replaces = absolute_source_overrides(&root_file.manifest.replace, &root_dir);
+
     Ok(Workspace {
         root_dir,
         manifest_path: root_file.path.clone(),
@@ -425,7 +435,61 @@ fn assemble(root: &RootFile<'_>, choice: ManifestChoice) -> Result<Workspace, St
         shared_dependencies: workspace_config.and_then(|config| config.shared_dependencies.clone()),
         resolver,
         profiles: root_file.manifest.profiles.clone(),
+        patches,
+        replaces,
     })
+}
+
+// Makes patch and replace paths absolute against the workspace root, since
+// the resolver consumes them from anywhere in the graph.
+fn absolute_source_overrides(
+    overrides: &BTreeMap<String, Dependency>,
+    root_dir: &Path,
+) -> BTreeMap<String, Dependency> {
+    overrides
+        .iter()
+        .map(|(name, dependency)| {
+            let mut dependency = dependency.clone();
+            if let (Some(path), false) = (&mut dependency.path, dependency.git.is_some()) {
+                *path = root_dir.join(path.as_str()).display().to_string();
+            }
+            (name.clone(), dependency)
+        })
+        .collect()
+}
+
+impl Inheritance {
+    // Patch and replace entries redirect a crates.io dependency to a local
+    // source. Replace keys may pin a version as `name:version`; those only
+    // apply when the dependency requirement accepts that version.
+    pub(crate) fn redirect_for(&self, package: &str, requirement: &str) -> Option<Dependency> {
+        if let Some(patched) = self.patches.get(package) {
+            return Some(patched.clone());
+        }
+        // Replace keys may pin the version as `name:version`; a pinned entry
+        // applies only when the consumer requirement accepts that version.
+        let requirement = VersionReq::parse(requirement).ok();
+        for (key, dependency) in &self.replaces {
+            let (name, pinned) = match key.rsplit_once(':') {
+                Some((name, version)) if !version.is_empty() => (name, Some(version)),
+                _ => (key.as_str(), None),
+            };
+            if name != package {
+                continue;
+            }
+            if let Some(version) = pinned {
+                let accepted = match (&requirement, Version::parse(version)) {
+                    (Some(request), Ok(version)) => request.matches(&version),
+                    _ => false,
+                };
+                if !accepted {
+                    continue;
+                }
+            }
+            return Some(dependency.clone());
+        }
+        None
+    }
 }
 
 fn mark_member(

@@ -626,12 +626,16 @@ fn process_dependency(
     kind: DependencyKind,
     extra_features: &[String],
 ) -> Result<Outcome, String> {
-    let parent_meta = state
+    let mut parent_meta = state
         .packages
         .get(parent)
         .ok_or_else(|| format!("internal error: parent `{}` is missing", parent.name))?
         .meta
         .clone();
+    if let Some(inheritance) = context.inheritance {
+        apply_source_overrides(inheritance, &mut parent_meta.deps)?;
+        state.packages.get_mut(parent).unwrap().meta.deps = parent_meta.deps.clone();
+    }
     let dependency = parent_meta
         .deps
         .iter()
@@ -680,10 +684,7 @@ fn process_dependency(
             })?;
             let url = git::canonical_url(&git_source.url);
             let reference = git_reference(git_source).map_err(|error| {
-                format!(
-                    "dependency `{key}` of `{}`: {error}",
-                    parent_meta.name
-                )
+                format!("dependency `{key}` of `{}`: {error}", parent_meta.name)
             })?;
             let rev = match locked_git_rev(context.lock, &url, reference.as_ref()) {
                 Some(rev) => rev,
@@ -702,9 +703,9 @@ fn process_dependency(
                 ));
             }
             let directory = git::checkout(&git.root, &url, &rev)?;
-            let directory = directory.canonicalize().map_err(|error| {
-                format!("git checkout for `{}`: {error}", directory.display())
-            })?;
+            let directory = directory
+                .canonicalize()
+                .map_err(|error| format!("git checkout for `{}`: {error}", directory.display()))?;
             let package_source = PackageSource::Git {
                 url,
                 reference: reference.clone(),
@@ -1345,6 +1346,46 @@ fn same_compatibility_class(left: &Version, right: &Version) -> bool {
     } else {
         left.major == right.major
     }
+}
+
+// Redirects Registry-source deps of a package through patch overrides and
+// replace entries. Consumer requirements, features, and optionality are kept,
+// so a patched version must still satisfy every dependency requirement.
+fn apply_source_overrides(
+    inheritance: &Inheritance,
+    deps: &mut Vec<DepMeta>,
+) -> Result<(), String> {
+    for dependency in deps.iter_mut() {
+        if !matches!(dependency.source, DepSource::Registry) {
+            continue;
+        }
+        let Some(patched) = inheritance.redirect_for(&dependency.package, &dependency.requirement)
+        else {
+            continue;
+        };
+        if patched.path.is_none() && patched.git.is_none() {
+            return Err(format!(
+                "override for `{}` must set a `path` or `git` source",
+                dependency.package
+            ));
+        }
+        if patched.workspace {
+            return Err(format!(
+                "override for `{}` cannot use `workspace = true`",
+                dependency.package
+            ));
+        }
+        let source = match (&patched.path, &patched.git) {
+            (Some(path), None) => DepSource::Path(PathBuf::from(path)),
+            (None, Some(git)) => DepSource::Git(git.clone()),
+            _ => DepSource::Registry,
+        };
+        let mut features = dependency.features.clone();
+        features.extend(patched.features.iter().cloned());
+        dependency.source = source;
+        dependency.features = features;
+    }
+    Ok(())
 }
 
 fn target_matches(
@@ -2636,7 +2677,11 @@ mod tests {
         .unwrap();
         let foo = require(&resolution, "foo");
         match &foo.id.source {
-            PackageSource::Git { url, reference, rev } => {
+            PackageSource::Git {
+                url,
+                reference,
+                rev,
+            } => {
                 assert_eq!(url, &repo.url());
                 assert!(reference.is_none());
                 assert_eq!(rev, &head);
@@ -2866,5 +2911,208 @@ mod tests {
             &branch_rev,
         );
         assert_ne!(tag_source, branch_source);
+    }
+
+    #[test]
+    fn patch_overrides_redirect_registry_sources() {
+        let fixture = Fixture::new("patch-redirect");
+        let root = fixture
+            .root("[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\nfoo = \"1\"\n");
+        fixture.write(
+            "patched/Cargo.toml",
+            "[package]\nname = \"foo\"\nversion = \"1.0.5\"\nedition = \"2021\"\n",
+        );
+        let dependency = crate::manifest::Dependency {
+            path: Some(
+                root.manifest_path
+                    .parent()
+                    .unwrap()
+                    .join("patched")
+                    .display()
+                    .to_string(),
+            ),
+            ..crate::manifest::Dependency::default()
+        };
+        let mut patches = BTreeMap::new();
+        patches.insert("foo".to_string(), dependency);
+        let inheritance = crate::workspace::Inheritance {
+            workspace_dir: root.manifest_path.parent().unwrap().to_path_buf(),
+            shared_package: None,
+            shared_dependencies: None,
+            patches,
+            replaces: BTreeMap::new(),
+            member_dirs: BTreeSet::new(),
+        };
+        let mut registry = FakeRegistry::new();
+        registry.add(entry("foo", "1.0.0", vec![], BTreeMap::new(), false));
+        let mut options = options();
+        options.inheritance = Some(inheritance);
+
+        let resolution = resolve(
+            &[root],
+            &mut registry,
+            &cfg(),
+            None,
+            ManifestChoice::Auto,
+            None,
+            &options,
+        )
+        .unwrap();
+
+        let foo = require(&resolution, "foo");
+        assert_eq!(foo.version, Version::parse("1.0.5").unwrap());
+        assert!(matches!(foo.id.source, PackageSource::Path(_)));
+    }
+
+    #[test]
+    fn patch_overrides_must_satisfy_consumer_requirements() {
+        let fixture = Fixture::new("patch-mismatch");
+        let root = fixture
+            .root("[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\nfoo = \"1\"\n");
+        fixture.write(
+            "patched/Cargo.toml",
+            "[package]\nname = \"foo\"\nversion = \"2.0.0\"\nedition = \"2021\"\n",
+        );
+        let dependency = crate::manifest::Dependency {
+            path: Some(
+                root.manifest_path
+                    .parent()
+                    .unwrap()
+                    .join("patched")
+                    .display()
+                    .to_string(),
+            ),
+            ..crate::manifest::Dependency::default()
+        };
+        let mut patches = BTreeMap::new();
+        patches.insert("foo".to_string(), dependency);
+        let inheritance = crate::workspace::Inheritance {
+            workspace_dir: root.manifest_path.parent().unwrap().to_path_buf(),
+            shared_package: None,
+            shared_dependencies: None,
+            patches,
+            replaces: BTreeMap::new(),
+            member_dirs: BTreeSet::new(),
+        };
+        let mut registry = FakeRegistry::new();
+        registry.add(entry("foo", "1.0.0", vec![], BTreeMap::new(), false));
+        let mut options = options();
+        options.inheritance = Some(inheritance);
+
+        let error = resolve(
+            &[root],
+            &mut registry,
+            &cfg(),
+            None,
+            ManifestChoice::Auto,
+            None,
+            &options,
+        )
+        .err()
+        .expect("a patch outside the consumer requirement must fail");
+        assert!(error.contains("foo"), "{error}");
+    }
+
+    #[test]
+    fn replace_entries_redirect_pinned_versions() {
+        let fixture = Fixture::new("replace-redirect");
+        let root = fixture.root(
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\nfoo = \"^0.1\"\n",
+        );
+        fixture.write(
+            "fork/Cargo.toml",
+            "[package]\nname = \"foo\"\nversion = \"0.1.9\"\nedition = \"2021\"\n",
+        );
+        let dependency = crate::manifest::Dependency {
+            path: Some(
+                root.manifest_path
+                    .parent()
+                    .unwrap()
+                    .join("fork")
+                    .display()
+                    .to_string(),
+            ),
+            ..crate::manifest::Dependency::default()
+        };
+        let mut replaces = BTreeMap::new();
+        replaces.insert("foo:0.1.9".to_string(), dependency);
+        let inheritance = crate::workspace::Inheritance {
+            workspace_dir: root.manifest_path.parent().unwrap().to_path_buf(),
+            shared_package: None,
+            shared_dependencies: None,
+            patches: BTreeMap::new(),
+            replaces,
+            member_dirs: BTreeSet::new(),
+        };
+        let mut registry = FakeRegistry::new();
+        registry.add(entry("foo", "0.1.9", vec![], BTreeMap::new(), false));
+        let mut options = options();
+        options.inheritance = Some(inheritance);
+
+        let resolution = resolve(
+            &[root],
+            &mut registry,
+            &cfg(),
+            None,
+            ManifestChoice::Auto,
+            None,
+            &options,
+        )
+        .unwrap();
+
+        let foo = require(&resolution, "foo");
+        assert!(matches!(foo.id.source, PackageSource::Path(_)));
+    }
+
+    #[test]
+    fn replace_pinned_versions_respect_the_consumer_requirement() {
+        let fixture = Fixture::new("replace-mismatch");
+        let root = fixture.root(
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n[dependencies]\nfoo = \"^0.2\"\n",
+        );
+        fixture.write(
+            "fork/Cargo.toml",
+            "[package]\nname = \"foo\"\nversion = \"0.1.9\"\nedition = \"2021\"\n",
+        );
+        let dependency = crate::manifest::Dependency {
+            path: Some(
+                root.manifest_path
+                    .parent()
+                    .unwrap()
+                    .join("fork")
+                    .display()
+                    .to_string(),
+            ),
+            ..crate::manifest::Dependency::default()
+        };
+        let mut replaces = BTreeMap::new();
+        replaces.insert("foo:0.1.9".to_string(), dependency);
+        let inheritance = crate::workspace::Inheritance {
+            workspace_dir: root.manifest_path.parent().unwrap().to_path_buf(),
+            shared_package: None,
+            shared_dependencies: None,
+            patches: BTreeMap::new(),
+            replaces,
+            member_dirs: BTreeSet::new(),
+        };
+        let mut registry = FakeRegistry::new();
+        registry.add(entry("foo", "0.2.0", vec![], BTreeMap::new(), false));
+        let mut options = options();
+        options.inheritance = Some(inheritance);
+
+        let resolution = resolve(
+            &[root],
+            &mut registry,
+            &cfg(),
+            None,
+            ManifestChoice::Auto,
+            None,
+            &options,
+        )
+        .unwrap();
+
+        let foo = require(&resolution, "foo");
+        assert_eq!(foo.version, Version::parse("0.2.0").unwrap());
+        assert!(matches!(foo.id.source, PackageSource::Registry));
     }
 }

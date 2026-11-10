@@ -1,0 +1,17 @@
+[package]
+name = "patch-replace-app"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+members = []
+
+[dependencies]
+itoa = "1"
+libc = "0.2"
+
+[patch.crates-io]
+itoa = { path = "itoa-fork" }
+
+[replace."libc:0.2.170"]
+path = "libc-fork"

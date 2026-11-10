@@ -1760,7 +1760,7 @@ pub(crate) fn clippy_driver() -> Result<PathBuf, String> {
     let rustc_env = std::env::var_os(RUSTC_ENV);
     let path_match = std::env::var_os(PATH_ENV);
     let bin_dirs = cargo_bin_dirs();
-    clippy_driver_from(&name, &rustc_env, path_match.as_deref(), &bin_dirs)
+    clippy_driver_from(&name, rustc_env.as_deref(), path_match.as_deref(), &bin_dirs)
 }
 
 fn clippy_driver_from(

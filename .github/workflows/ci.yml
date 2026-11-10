@@ -34,7 +34,7 @@ jobs:
           sudo apt-get install -y build-essential
       - name: Install Rust 1.85
         run: |
-          rustup toolchain install 1.85.0 --profile minimal --component clippy
+          rustup toolchain install 1.85.0 --profile minimal --component clippy --component rustfmt
           rustup override set 1.85.0
       - name: Unit suite
         run: ./scripts/test.sh unit

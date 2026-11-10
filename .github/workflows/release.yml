@@ -19,8 +19,12 @@ jobs:
         include:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
+            extra: ""
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
+            # RUSTFLAGS is ignored by rustc when --target is passed, so the
+            # linker rides on the command line.
+            extra: "-C linker=aarch64-linux-gnu-gcc -C link-self-contained=yes"
           - target: aarch64-apple-darwin
             os: macos-latest
           - target: x86_64-pc-windows-msvc
@@ -35,9 +39,6 @@ jobs:
       - name: Install aarch64 cross linker
         if: matrix.target == 'aarch64-unknown-linux-musl'
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-      - name: Use static musl linking
-        if: matrix.target == 'aarch64-unknown-linux-musl'
-        run: echo "RUSTFLAGS=-C linker=aarch64-linux-gnu-gcc -C link-self-contained=yes" >> "$GITHUB_ENV"
       - name: Build
         shell: bash
         run: |
@@ -47,7 +48,7 @@ jobs:
             name=$name.exe
           fi
           rustc --edition 2021 --crate-name rusted --target ${{ matrix.target }} \
-            -C opt-level=3 -C strip=symbols -C codegen-units=16 \
+            -C opt-level=3 -C strip=symbols -C codegen-units=16 ${{ matrix.extra }} \
             src/main.rs -o "dist/$name"
       - name: Checksum
         shell: bash

@@ -1112,7 +1112,14 @@ fn prepare(
     }
 
     let incremental_dir = if flags.incremental() {
-        Some(profile_dirs.for_unit(unit).join("incremental"))
+        // Per-unit state, so two contexts of the same crate never share
+        // rustc incremental files while compiling in parallel.
+        Some(
+            profile_dirs
+                .for_unit(unit)
+                .join("incremental")
+                .join(format!("{key:.16}")),
+        )
     } else {
         None
     };

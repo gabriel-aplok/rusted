@@ -87,21 +87,21 @@ impl TargetSelection {
     }
 }
 
-struct LibTarget {
-    name: String,
-    path: String,
-    proc_macro: bool,
-    crate_types: Vec<String>,
+pub(crate) struct LibTarget {
+    pub(crate) name: String,
+    pub(crate) path: String,
+    pub(crate) proc_macro: bool,
+    pub(crate) crate_types: Vec<String>,
 }
 
-struct BinTarget {
-    name: String,
-    path: PathBuf,
+pub(crate) struct BinTarget {
+    pub(crate) name: String,
+    pub(crate) path: PathBuf,
 }
 
-struct NamedTarget {
-    name: String,
-    path: PathBuf,
+pub(crate) struct NamedTarget {
+    pub(crate) name: String,
+    pub(crate) path: PathBuf,
 }
 
 pub(crate) fn plan(
@@ -585,7 +585,7 @@ fn build_script_path(dir: &Path, manifest: &Manifest) -> Result<Option<PathBuf>,
     }
 }
 
-fn lib_target(manifest: &Manifest, dir: &Path) -> Option<LibTarget> {
+pub(crate) fn lib_target(manifest: &Manifest, dir: &Path) -> Option<LibTarget> {
     if let Some(lib) = &manifest.lib {
         return Some(LibTarget {
             name: lib.name.clone().unwrap_or_else(|| manifest.name.clone()),
@@ -609,7 +609,7 @@ fn lib_target(manifest: &Manifest, dir: &Path) -> Option<LibTarget> {
     }
 }
 
-fn bin_targets(dir: &Path, manifest: &Manifest) -> Result<Vec<BinTarget>, String> {
+pub(crate) fn bin_targets(dir: &Path, manifest: &Manifest) -> Result<Vec<BinTarget>, String> {
     let package_name = &manifest.name;
     let mut bins: Vec<BinTarget> = Vec::new();
 
@@ -701,7 +701,7 @@ fn default_bin_path(dir: &Path, name: &str, package_name: &str) -> Result<PathBu
     ))
 }
 
-fn test_targets(dir: &Path, manifest: &Manifest) -> Result<Vec<NamedTarget>, String> {
+pub(crate) fn test_targets(dir: &Path, manifest: &Manifest) -> Result<Vec<NamedTarget>, String> {
     named_targets(
         dir,
         manifest,
@@ -712,7 +712,7 @@ fn test_targets(dir: &Path, manifest: &Manifest) -> Result<Vec<NamedTarget>, Str
     )
 }
 
-fn example_targets(dir: &Path, manifest: &Manifest) -> Result<Vec<NamedTarget>, String> {
+pub(crate) fn example_targets(dir: &Path, manifest: &Manifest) -> Result<Vec<NamedTarget>, String> {
     named_targets(
         dir,
         manifest,
@@ -723,7 +723,7 @@ fn example_targets(dir: &Path, manifest: &Manifest) -> Result<Vec<NamedTarget>, 
     )
 }
 
-fn bench_targets(dir: &Path, manifest: &Manifest) -> Result<Vec<NamedTarget>, String> {
+pub(crate) fn bench_targets(dir: &Path, manifest: &Manifest) -> Result<Vec<NamedTarget>, String> {
     for spec in &manifest.benches {
         if spec.harness != Some(false) {
             continue;

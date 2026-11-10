@@ -290,6 +290,7 @@ pub(crate) fn artifact_key(
     source: &[u8; 32],
     build_script: Option<&str>,
     dependencies: &[(String, String)],
+    salt: Option<&str>,
 ) -> String {
     let mut hasher = Sha256::new();
 
@@ -352,7 +353,16 @@ pub(crate) fn artifact_key(
         field(&mut hasher, key);
     }
 
+    field(&mut hasher, &salt_key_component(salt));
+
     to_hex(&hasher.finish())
+}
+
+fn salt_key_component(salt: Option<&str>) -> String {
+    match salt {
+        Some(name) => format!("salt={name}"),
+        None => "salt=none".to_string(),
+    }
 }
 
 fn field(hasher: &mut Sha256, value: &str) {
@@ -418,6 +428,7 @@ mod key_tests {
             &source,
             None,
             &[],
+            None,
         );
 
         assert_eq!(
@@ -429,7 +440,8 @@ mod key_tests {
                 Mode::Build,
                 &source,
                 None,
-                &[]
+                &[],
+                None
             )
         );
         assert_ne!(
@@ -441,7 +453,8 @@ mod key_tests {
                 Mode::Build,
                 &source,
                 None,
-                &[]
+                &[],
+                None
             )
         );
         assert_ne!(
@@ -453,7 +466,8 @@ mod key_tests {
                 Mode::Check,
                 &source,
                 None,
-                &[]
+                &[],
+                None
             )
         );
         assert_ne!(
@@ -465,7 +479,8 @@ mod key_tests {
                 Mode::Build,
                 &[8u8; 32],
                 None,
-                &[]
+                &[],
+                None
             )
         );
         assert_ne!(
@@ -477,7 +492,8 @@ mod key_tests {
                 Mode::Build,
                 &source,
                 None,
-                &[("dep".to_string(), "key".to_string())]
+                &[("dep".to_string(), "key".to_string())],
+                None
             )
         );
 
@@ -492,7 +508,49 @@ mod key_tests {
                 Mode::Build,
                 &source,
                 None,
-                &[]
+                &[],
+                None
+            )
+        );
+    }
+
+    #[test]
+    fn artifact_key_salt_separates_clippy_from_check() {
+        let unit = unit();
+        let flags = Flags::for_test();
+        let source = [7u8; 32];
+        let base = artifact_key(
+            &unit,
+            &flags,
+            &identity("a"),
+            Mode::Check,
+            &source,
+            None,
+            &[],
+            None,
+        );
+        let salted = artifact_key(
+            &unit,
+            &flags,
+            &identity("a"),
+            Mode::Check,
+            &source,
+            None,
+            &[],
+            Some(crate::build::CLIPPY_ARTIFACT_SALT),
+        );
+        assert_ne!(base, salted);
+        assert_ne!(
+            base,
+            artifact_key(
+                &unit,
+                &flags,
+                &identity("a"),
+                Mode::Check,
+                &source,
+                None,
+                &[],
+                Some("other")
             )
         );
     }

@@ -2,6 +2,7 @@ mod build_script;
 pub(crate) mod doc;
 mod feature_split;
 pub(crate) mod fingerprint;
+pub(crate) mod fmt;
 mod output;
 pub(crate) mod plan;
 mod rustc;
@@ -129,6 +130,9 @@ pub(crate) struct Options<'a> {
     pub(crate) target_dir: Option<&'a Path>,
     pub(crate) profiles: &'a BTreeMap<String, ProfileEntry>,
     pub(crate) document: bool,
+    pub(crate) rustc_program: Option<std::ffi::OsString>,
+    pub(crate) artifact_salt: Option<String>,
+    pub(crate) rustc_extra_args: Vec<String>,
 }
 
 enum Preparation {
@@ -251,6 +255,7 @@ impl Schedule {
 }
 
 struct Job {
+    program: std::ffi::OsString,
     unit: Unit,
     flags: Flags,
     mode: Mode,
@@ -668,6 +673,10 @@ pub(crate) fn run(
                         }
 
                         let job = Job {
+                            program: options
+                                .rustc_program
+                                .clone()
+                                .unwrap_or_else(|| rustc_program()),
                             unit: unit.clone(),
                             flags: prepared.flags,
                             mode: options.mode,
@@ -1017,6 +1026,7 @@ fn prepare(
         &source,
         build_output.map(|output| output.key.as_str()),
         &dependency_keys,
+        options.artifact_salt.as_deref(),
     );
     keys[index] = Some(key.clone());
     let require_nonzero = !requires_metadata_only(options.mode, unit.kind);
@@ -1051,7 +1061,7 @@ fn prepare(
         None
     };
     let mut env = package_environment(package, unit);
-    let (cfgs, args, out_dir) = match build_output {
+    let (cfgs, mut args, out_dir) = match build_output {
         Some(output) => {
             env.extend(output.env.clone());
             (
@@ -1062,6 +1072,7 @@ fn prepare(
         }
         None => (Vec::new(), Vec::new(), None),
     };
+    args.extend(options.rustc_extra_args.iter().cloned());
 
     Ok(Preparation::Miss(Prepared {
         key,
@@ -1195,6 +1206,7 @@ fn execute_job(job: Job) -> Result<JobOutcome, JobError> {
             .map(|name| job.store.root().join("metadata").join(&job.key).join(name))
     });
     let outcome = rustc::compile(
+        &job.program,
         job.index,
         &job.unit,
         &job.key,
@@ -1662,7 +1674,67 @@ fn emit_artifact(
 }
 
 pub(crate) fn rustc_program() -> std::ffi::OsString {
-    std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into())
+    std::env::var_os(RUSTC_ENV).unwrap_or_else(|| DEFAULT_RUSTC.into())
+}
+
+pub(crate) const CLIPPY_ARTIFACT_SALT: &str = "clippy";
+
+const RUSTC_ENV: &str = "RUSTC";
+const DEFAULT_RUSTC: &str = "rustc";
+const CLIPPY_DRIVER: &str = "clippy-driver";
+const CLIPPY_NAME_PREFIX: &str = "clippy";
+const PATH_ENV: &str = "PATH";
+const CARGO_HOME_ENV: &str = "CARGO_HOME";
+const CARGO_BIN_DIR: &str = "bin";
+const DOT_CARGO_DIR: &str = ".cargo";
+
+#[cfg(windows)]
+const EXECUTABLE_SUFFIX: &str = ".exe";
+#[cfg(not(windows))]
+const EXECUTABLE_SUFFIX: &str = "";
+
+pub(crate) fn clippy_driver() -> Result<PathBuf, String> {
+    if let Some(rustc) = std::env::var_os(RUSTC_ENV) {
+        let path = PathBuf::from(&rustc);
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        if name.starts_with(CLIPPY_NAME_PREFIX) {
+            return Ok(path);
+        }
+    }
+    let name = format!("{CLIPPY_DRIVER}{EXECUTABLE_SUFFIX}");
+    if let Some(found) = find_on_path(&name) {
+        return Ok(found);
+    }
+    for directory in cargo_bin_dirs() {
+        let candidate = directory.join(&name);
+        if rustc::is_executable(&candidate) {
+            return Ok(candidate);
+        }
+    }
+    Err(format!(
+        "{CLIPPY_DRIVER} was not found on `PATH` or in the cargo home directory, install the clippy component with `rustup component add clippy`"
+    ))
+}
+
+fn find_on_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os(PATH_ENV)?;
+    std::env::split_paths(&path)
+        .map(|directory| directory.join(name))
+        .find(|candidate| rustc::is_executable(candidate))
+}
+
+fn cargo_bin_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(cargo_home) = std::env::var_os(CARGO_HOME_ENV) {
+        dirs.push(PathBuf::from(cargo_home).join(CARGO_BIN_DIR));
+    }
+    if let Ok(home) = crate::config::home() {
+        dirs.push(home.join(DOT_CARGO_DIR).join(CARGO_BIN_DIR));
+    }
+    dirs
 }
 
 pub(crate) fn clean(
@@ -1711,4 +1783,40 @@ fn profile_dir_name(profile: &str) -> &str {
 fn canonical(path: &Path) -> Result<PathBuf, Error> {
     path.canonicalize()
         .map_err(|error| Error::tool(format!("{}: {error}", path.display())))
+}
+
+#[cfg(test)]
+mod clippy_tests {
+    use super::clippy_driver;
+
+    #[test]
+    fn clippy_driver_error_suggests_the_clippy_component() {
+        let temp = std::env::temp_dir().join(format!("rusted-clippy-{}", std::process::id()));
+        std::fs::create_dir_all(&temp).unwrap();
+        let vars = ["RUSTC", "CARGO_HOME", "HOME", "PATH"];
+        let originals: Vec<(String, Option<std::ffi::OsString>)> = vars
+            .iter()
+            .map(|name| (name.to_string(), std::env::var_os(name)))
+            .collect();
+
+        std::env::remove_var("RUSTC");
+        std::env::remove_var("PATH");
+        std::env::set_var("CARGO_HOME", &temp);
+        std::env::set_var("HOME", &temp);
+
+        let error = clippy_driver().unwrap_err();
+
+        for (name, value) in originals {
+            match value {
+                Some(value) => std::env::set_var(&name, value),
+                None => std::env::remove_var(&name),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&temp);
+
+        assert!(
+            error.contains("install the clippy component with `rustup component add clippy`"),
+            "{error}"
+        );
+    }
 }

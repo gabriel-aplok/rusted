@@ -225,7 +225,7 @@ fn config_dir() -> Result<PathBuf, String> {
     Ok(base)
 }
 
-fn home() -> Result<PathBuf, String> {
+pub(crate) fn home() -> Result<PathBuf, String> {
     std::env::var_os(HOME_ENV)
         .or_else(|| std::env::var_os(USERPROFILE_ENV))
         .map(PathBuf::from)

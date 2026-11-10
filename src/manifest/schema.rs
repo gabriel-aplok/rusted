@@ -117,7 +117,7 @@ pub(crate) enum DependencyKind {
     Build,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Edition {
     E2015,
     E2018,

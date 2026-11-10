@@ -266,7 +266,7 @@ fn find_linker(names: &[&str]) -> Option<String> {
     None
 }
 
-fn is_executable(path: &Path) -> bool {
+pub(crate) fn is_executable(path: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -281,6 +281,7 @@ fn is_executable(path: &Path) -> bool {
 }
 
 pub(crate) fn compile(
+    program: &std::ffi::OsStr,
     unit_index: usize,
     unit: &Unit,
     unit_metadata: &str,
@@ -300,7 +301,7 @@ pub(crate) fn compile(
     format: MessageFormat,
     verbose: bool,
 ) -> Result<CompileOutcome, String> {
-    let mut command = Command::new(program());
+    let mut command = Command::new(program);
 
     command
         .arg("-C")

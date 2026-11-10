@@ -29,7 +29,7 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 curl -fsSL -o "$tmp/rusted" "$base/rusted-$target"
-curl -fsSL -o "$tmp/rusted.sha256" "$base/rusted-$target.sha256"
+curl -fsSL -o "$tmp/rusted.sha256" "$base/checksums.sha256"
 
 expected=$(awk -v name="rusted-$target" '$2 == name { print $1 }' "$tmp/rusted.sha256")
 if [ -z "$expected" ]; then

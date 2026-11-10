@@ -1756,8 +1756,21 @@ const EXECUTABLE_SUFFIX: &str = ".exe";
 const EXECUTABLE_SUFFIX: &str = "";
 
 pub(crate) fn clippy_driver() -> Result<PathBuf, String> {
-    if let Some(rustc) = std::env::var_os(RUSTC_ENV) {
-        let path = PathBuf::from(&rustc);
+    let name = format!("{CLIPPY_DRIVER}{EXECUTABLE_SUFFIX}");
+    let rustc_env = std::env::var_os(RUSTC_ENV);
+    let path_match = std::env::var_os(PATH_ENV);
+    let bin_dirs = cargo_bin_dirs();
+    clippy_driver_from(&name, &rustc_env, path_match.as_deref(), &bin_dirs)
+}
+
+fn clippy_driver_from(
+    name: &str,
+    rustc_env: Option<&std::ffi::OsStr>,
+    path: Option<&std::ffi::OsStr>,
+    bin_dirs: &[PathBuf],
+) -> Result<PathBuf, String> {
+    if let Some(rustc) = rustc_env {
+        let path = PathBuf::from(rustc);
         let name = path
             .file_name()
             .and_then(|name| name.to_str())
@@ -1766,12 +1779,16 @@ pub(crate) fn clippy_driver() -> Result<PathBuf, String> {
             return Ok(path);
         }
     }
-    let name = format!("{CLIPPY_DRIVER}{EXECUTABLE_SUFFIX}");
-    if let Some(found) = find_on_path(&name) {
-        return Ok(found);
+    if let Some(path) = path {
+        let found = std::env::split_paths(path)
+            .map(|directory| directory.join(name))
+            .find(|candidate| rustc::is_executable(candidate));
+        if let Some(found) = found {
+            return Ok(found);
+        }
     }
-    for directory in cargo_bin_dirs() {
-        let candidate = directory.join(&name);
+    for directory in bin_dirs {
+        let candidate = directory.join(name);
         if rustc::is_executable(&candidate) {
             return Ok(candidate);
         }
@@ -1779,13 +1796,6 @@ pub(crate) fn clippy_driver() -> Result<PathBuf, String> {
     Err(format!(
         "{CLIPPY_DRIVER} was not found on `PATH` or in the cargo home directory, install the clippy component with `rustup component add clippy`"
     ))
-}
-
-fn find_on_path(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os(PATH_ENV)?;
-    std::env::split_paths(&path)
-        .map(|directory| directory.join(name))
-        .find(|candidate| rustc::is_executable(candidate))
 }
 
 fn cargo_bin_dirs() -> Vec<PathBuf> {
@@ -1889,32 +1899,12 @@ mod layout_tests {
 
 #[cfg(test)]
 mod clippy_tests {
-    use super::clippy_driver;
+    use super::clippy_driver_from;
 
     #[test]
     fn clippy_driver_error_suggests_the_clippy_component() {
-        let temp = std::env::temp_dir().join(format!("rusted-clippy-{}", std::process::id()));
-        std::fs::create_dir_all(&temp).unwrap();
-        let vars = ["RUSTC", "CARGO_HOME", "HOME", "PATH"];
-        let originals: Vec<(String, Option<std::ffi::OsString>)> = vars
-            .iter()
-            .map(|name| (name.to_string(), std::env::var_os(name)))
-            .collect();
-
-        std::env::remove_var("RUSTC");
-        std::env::remove_var("PATH");
-        std::env::set_var("CARGO_HOME", &temp);
-        std::env::set_var("HOME", &temp);
-
-        let error = clippy_driver().unwrap_err();
-
-        for (name, value) in originals {
-            match value {
-                Some(value) => std::env::set_var(&name, value),
-                None => std::env::remove_var(&name),
-            }
-        }
-        let _ = std::fs::remove_dir_all(&temp);
+        let missing = clippy_driver_from("clippy-driver", None, None, &[]);
+        let error = missing.unwrap_err();
 
         assert!(
             error.contains("install the clippy component with `rustup component add clippy`"),
